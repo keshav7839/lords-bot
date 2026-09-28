@@ -1,0 +1,29 @@
+name: bot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: |
+          cd bot
+          mkdir -p data
+          gcc -O2 -std=gnu11 -DVERSION='"1.0.2"' -Iinclude \
+            src/main.c src/connection.c src/log.c src/protocol.c \
+            src/des.c src/map_point.c src/command.c src/config.c src/auto.c \
+            src/waves.c \
+            -o client
+      - name: run
+        run: |
+          cd bot
+          (timeout 300 stdbuf -oL ./client config.cfg > run.log 2>&1 || true)
+          echo "==== run.log ===="
+          cat run.log
+          echo "==== verdict ===="
+          if grep -q "Game login successful" run.log; then echo "LOGIN=ok"; else echo "LOGIN=fail"; fi
+          if grep -q "Disconnected" run.log; then echo "VERDICT=killed_before_300s"; else echo "VERDICT=stable_300s"; fi

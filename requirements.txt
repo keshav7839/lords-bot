@@ -1,0 +1,17 @@
+python-telegram-bot
+python-dotenv
+httpx
+aiohttp
+msgpack
+pymongo
+motor
+pillow
+requests
+psutil
+pymysql
+orjson
+cachetools
+lz4
+pilmoji
+gradio>=5.0.0,<6.0.0
+uvicorn
