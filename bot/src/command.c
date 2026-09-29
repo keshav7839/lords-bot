@@ -232,6 +232,27 @@ void command_handler(Connection *c, const char *player_name, const char *message
 		return;
 	}
 	
+	/* $herolv <heroId> — level a hero up once.
+	 * Manual, not automatic: 1204 spends the account's own hero XP items,
+	 * so burning them unattended would be the bot's choice, not the
+	 * player's. The packet is confirmed against the decompiled client. */
+	if (memcmp(message, "herolv", 6) == 0 &&
+	    (message[6] == '\0' || message[6] == ' '))
+	{
+		CMD_REQUIRE_ADMIN();
+		uint32_t hid = (uint32_t)strtoul(message + 6, NULL, 0);
+		if (hid == 0) {
+			RequestSendMail(c, player_name, "Hero level up",
+			                "Usage: $herolv <heroId>");
+			return;
+		}
+		RequestHeroEnhance(c, hid);
+		RequestSendMail(c, player_name, "Hero level up sent",
+		                "Hero upgraded - see bot log for the "
+		                "server response.");
+		return;
+	}
+
 	/* $dismiss <kind> <tier> <qty> — on-demand troop dismiss.
 	 * Deliberately a command rather than a scheduled feature: the 2405
 	 * packet makes this server drop the session a couple of minutes

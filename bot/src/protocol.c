@@ -1620,6 +1620,32 @@ void RequestCraftEquip(Connection *c, uint16_t item_id, uint32_t serial)
 }
 
 /* ------------------------------------------------------------------ */
+/* 1204 hero enhance (level up).
+ *
+ * CONFIRMED against the decompiled client (UIHero_Info, case 1 of the
+ * hero-upgrade handler):   seq | u32 heroID
+ * The request carries only the hero - the server derives the level from
+ * the hero's stored XP - so there is no field that can be got wrong.
+ *
+ * 1206 _MSG_REQUEST_HEROENHANCE_FREECOMPLETE is the instant finish and
+ * costs gems; it is deliberately not implemented anywhere in this bot.
+ */
+void RequestHeroEnhance(Connection *c, uint32_t hero_id)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_HEROENHANCE);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u32(c->data + c->size, hero_id);
+	c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+	LOGI("[HERO] enhance (level up) requested for hero %u\n", hero_id);
+}
+
 /* Scouting (2448 SENDSCOUT)                                            */
 /*                                                                      */
 /* Payload CONFIRMED against the decompiled client                      */
