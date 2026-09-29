@@ -42,6 +42,7 @@ void WaveNotifyBuildError(Connection *c, uint8_t code);
 void WaveRecvDump(Connection *c, const char *tag,
                   const uint8_t *data, uint16_t size);
 void WaveNotifyResearchStarted(Connection *c, const uint8_t *data, uint16_t size);
+void WaveNotifyResearchState(Connection *c);
 void WaveNotifyResearchComplete(Connection *c, const uint8_t *data,
                                 uint16_t size);
 
@@ -73,9 +74,24 @@ void WaveRecvTroopReturn(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvTroopHome(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGatheringEvent(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGatherReport(Connection *c, const uint8_t *data, uint16_t size);
+
+/* Gather slot tracking + recall-on-attack (protection.recall_on_incoming_
+ * attack): sends TROOPRETURN (2417) for every tracked gather slot. */
+void GatherRecallAll(Connection *c, const char *why);
+/* 2435 BEINGATTACK resync — recalls gather marches after a hit. */
+void WaveRecvBeingAttacked(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvHealingComplete(Connection *c, const uint8_t *data,
                              uint16_t size);
 void WaveRecvHeroSave(Connection *c, const uint8_t *data, uint16_t size);
+
+/* Alliance discovery (2810 apply / 2858 public info / 2818+2820 search). */
+void WaveRecvAllianceApply(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvAlliancePublicInfo(Connection *c, const uint8_t *data,
+                                uint16_t size);
+void WaveRecvAllianceSearch(Connection *c, const uint8_t *data,
+                            uint16_t size);
+void WaveRecvAllianceSearchResult(Connection *c, const uint8_t *data,
+                                  uint16_t size);
 
 /* Wave E: guild fest (ALLIANCEMOBILIZATION 3632..3644). */
 void WaveRecvGuildFestData(Connection *c, const uint8_t *data, uint16_t size);
@@ -86,6 +102,8 @@ void WaveRecvGuildFestDone(Connection *c, const uint8_t *data, uint16_t size);
 
 /* Wave E: Labyrinth (GAMBLE 7001..7008, event push 3660). */
 void WaveRecvGambleInfo(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvMonopolyInfo(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvMonopolyStep(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGambleStart(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGamblePrize(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGambleUpdateInfo(Connection *c, const uint8_t *data,

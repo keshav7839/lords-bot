@@ -17,6 +17,7 @@ static time_t g_train_last = 0;
 static time_t g_speedup_last = 0;
 static time_t g_speedup_day = 0;
 static uint16_t g_speedup_used = 0;
+static int64_t g_speedup_skip_log = -1;
 
 void TrainingTick(Connection *c)
 {
@@ -89,8 +90,10 @@ void SpeedupTick(Connection *c)
 	}
 
 	/* Active research? */
+	/* Active research? finish_time is the START instant, so the
+	 * end is start + total_time (same fix as research_idle()). */
 	if (!active && c->technology.total_time > 0 &&
-	    c->technology.finish_time > now) {
+	    c->technology.finish_time + (int64_t)c->technology.total_time > now) {
 		active = true;
 		what = "research";
 	}
@@ -114,10 +117,41 @@ void SpeedupTick(Connection *c)
 	if (g_speedup_used >= cap)
 		return;
 
+	/* Don't waste a partial item.
+	 * A 30-minute item on a job that has 20 minutes left is pure loss,
+	 * and the old code fired one every 60s regardless — burning up to
+	 * 10h of earned speed-ups a day. Only use the item when it is
+	 * actually covered by the remaining queue time (with a small
+	 * margin), and prefer research speed-ups for a research queue. */
+	const uint32_t ITEM_SECONDS = 30 * 60;
+	int64_t end = 0;
+	if (c->build_queue.total_time > 0)
+		end = c->build_queue.start_time + (int64_t)c->build_queue.total_time;
+	else if (c->technology.total_time > 0)
+		end = c->technology.finish_time + (int64_t)c->technology.total_time;
+
+	int64_t remaining = end - now;
+	if (remaining <= (int64_t)ITEM_SECONDS) {
+		if (g_speedup_skip_log != (int64_t)remaining) {
+			g_speedup_skip_log = (int64_t)remaining;
+			LOGI("[SPEEDUP] holding: %llds left on %s, a 30-min item "
+			     "would be wasted\n", (long long)remaining,
+			     what ? what : "task");
+		}
+		return;
+	}
+
+	/* Only use speed-ups we actually own. */
+	if (c->items[SPEED_UP_30_MINUTE].quantity == 0) {
+		return;
+	}
+
 	g_speedup_used++;
 	g_speedup_last = wall;
 
 	RequestSimpleUseItem(c, SPEED_UP_30_MINUTE, 1);
-	LOGI("[SPEEDUP] using 30-min speedup on %s (%u/%u today)\n",
-	     what ? what : "task", (unsigned)g_speedup_used, (unsigned)cap);
+	LOGI("[SPEEDUP] using 30-min speedup on %s, %llds remaining "
+	     "(%u/%u today)\n",
+	     what ? what : "task", (long long)remaining,
+	     (unsigned)g_speedup_used, (unsigned)cap);
 }

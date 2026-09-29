@@ -76,18 +76,41 @@ void WaveRecvDump(Connection *c, const char *tag,
 }
 
 
+/* Max plausible BUILDINGEVENT "position" (building slot index). The
+ * unverified offset guess used to yield 3574, which is not a slot, and
+ * the resulting phantom "busy" state blocked every build forever. */
+#define BUILD_QUEUE_MAX_POSITION 64
+
+static time_t g_build_busy_warned = 0;
+static time_t g_build_nowarn = 0;
+static time_t g_help_last = 0;
+
 static bool queue_idle(const BuildQueueInfo *q, int64_t server_time)
 {
 	if (q->total_time == 0)
 		return true;
+	/* The old "position 3574 must be a mis-parse" theory was wrong.
+	 * A live capture (run56) confirms this layout is correct: offset 6
+	 * is a real start time (2026-09-29 00:54:27 UTC) and offset 14 a
+	 * 45857s duration, i.e. a genuine 12h07m build running until 13:38.
+	 * `position` is a building position id and large values are normal.
+	 * So the queue really was busy for hours — the actual gap was that
+	 * building data never arrived at all (see the no-building-data path
+	 * in WaveUpgradeOne), not a bad offset. */
 	return (int64_t)(q->start_time + (int64_t)q->total_time) <= server_time;
 }
 
+/* c->technology.finish_time holds the research START instant (see
+ * RecvTechnologyInfo / WaveNotifyResearchStarted), NOT the end time.
+ * Comparing it directly against server_time made every research look
+ * finished the moment it started, so ResearchTick re-sent a start
+ * request every 45s and the server rejected all of them (err=1).
+ * Mirror queue_idle(): idle only once start + total has elapsed. */
 static bool research_idle(const TechnologyInfo *t, int64_t server_time)
 {
 	if (t->total_time == 0)
 		return true;
-	return t->finish_time <= server_time;
+	return (int64_t)(t->finish_time + (int64_t)t->total_time) <= server_time;
 }
 
 /* ------------------------------------------------------------------ */
@@ -113,11 +136,24 @@ void WaveUpgradeOne(Connection *c)
 	if (c->server_time == 0)
 		return;
 	if (c->building_count == 0) {
-		LOGI("[BUILD] no building data yet, waiting\n");
+		if (!g_build_nowarn || (now - g_build_nowarn) > 600) {
+			g_build_nowarn = now;
+			LOGI("[BUILD] no building data yet, waiting\n");
+		}
 		return;
 	}
 	if (!queue_idle(&c->build_queue, (int64_t)c->server_time)) {
-		LOGI("[BUILD] queue busy (pos %u)\n", c->build_queue.position);
+		/* Throttle: this path used to return without touching
+		 * g_build_last, so it logged on every 10s WaveTick (360
+		 * identical lines per run). */
+		if (!g_build_busy_warned || (now - g_build_busy_warned) > 600) {
+			g_build_busy_warned = now;
+			LOGI("[BUILD] queue busy (pos %u) until %llds\n",
+			     c->build_queue.position,
+			     (long long)(c->build_queue.start_time +
+			                 (int64_t)c->build_queue.total_time));
+		}
+		g_build_last = now;
 		return;
 	}
 	if (g_build_pending) {
@@ -207,6 +243,17 @@ static void BuildTick(Connection *c)
 			g_build_pending = false;
 		} else {
 			return;
+		}
+	}
+
+	/* Ask the guild for help on whatever we just started.
+	 * 1 help = -1% of the remaining timer, up to 30 per project, free.
+	 * Throttled so a rejected request cannot spam the server. */
+	if (c->alliance.request_own_help) {
+		if (!g_help_last || (now - g_help_last) >= 10) {
+			g_help_last = now;
+			RequestRequestOwnHelp(c);
+			LOGI("[HELP] requested guild help for our build\n");
 		}
 	}
 
@@ -372,6 +419,29 @@ void WaveNotifyResearchComplete(Connection *c, const uint8_t *data,
 	c->technology.finish_time = 0;
 	c->technology.total_time = 0;
 	LOGI("[RESEARCH] complete push (3208) — queue free\n");
+}
+
+/* Arms the "research in progress" state from the login-time RESEARCHINFO
+ * (or any later one). Before this existed, g_research_running was only set
+ * by an accepted start response, so on every fresh login the bot believed
+ * the academy was idle and fired a start request at a busy queue. */
+void WaveNotifyResearchState(Connection *c)
+{
+	if (c->technology.total_time == 0 || c->technology.finish_time == 0) {
+		g_research_running = false;
+		return;
+	}
+
+	int64_t end = c->technology.finish_time + (int64_t)c->technology.total_time;
+	if (end <= c->server_time) {
+		g_research_running = false;
+		return;
+	}
+
+	g_research_running = true;
+	g_research_started = time(NULL);
+	LOGI("[RESEARCH] in progress tech=%u remaining=%llds — queue busy\n",
+	     c->technology.research_tech, (long long)(end - c->server_time));
 }
 
 static void ResearchTick(Connection *c)
@@ -1265,9 +1335,15 @@ void WaveRecvTrainingResp(Connection *c, const uint8_t *data, uint16_t size)
 		     "(awaiting ADDSOLDIER)\n",
 		     c->train.pending_qty, c->train.pending_kind,
 		     c->train.pending_tier, c->train.pending_need);
+		/* FREE-ITEMS RULE: 2407 FINISHTRAINING is a *diamond purchase*
+		 * (its response literally carries `u32 diamonds`) — it is not
+		 * a speed-up item and it violates the no-premium-spend policy.
+		 * Removed; the batch now completes on its own timer. If a rush
+		 * is ever wanted, it must go through earned Speed-Up-Training
+		 * items via RequestSimpleUseItem, never 2407. */
 		if (c->train.instant_finish) {
-			RequestFinishTraining(c);
-			LOGI("[TRAIN] instant finish requested (2407)\n");
+			LOGW("[TRAIN] train.instant_finish is ignored: 2407 "
+			     "spends diamonds (free-items rule)\n");
 		}
 	}
 }
@@ -1310,6 +1386,42 @@ void WaveRecvAddSoldier(Connection *c, const uint8_t *data, uint16_t size)
 		 * sees the army; next ARMYYROUP/TROOPHOME push resyncs. */
 		CreditSoldiers(c, kind, rank, qty, "delivered(untracked)");
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Alliance probes (2809/2857 discovery, live-run 2026-09-29).        */
+/*   2810 APPLY resp: 33B — first byte = result code (0 = ok/queued). */
+/*   2858 PUBLICINFO resp: err | id | ... name/tag/approval/member;   */
+/*      the 1300-byte notice dominates the body, so dump head+tail.   */
+/*   2818 SEARCH resp (5B) + 2820 SEARCHRESULT (list).                */
+/* ------------------------------------------------------------------ */
+void WaveRecvAllianceApply(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("ALLIANCE_APPLY_RESP", data, size, 96);
+	if (size)
+		LOGI("[ALLY] apply result first-byte=%u size=%u\n",
+		     data[0], size);
+}
+
+void WaveRecvAlliancePublicInfo(Connection *c, const uint8_t *data,
+                               uint16_t size)
+{
+	HexPreview("ALLIANCE_PUBLICINFO_HEAD", data, size, 96);
+	if (size > 96)
+		HexPreview("ALLIANCE_PUBLICINFO_TAIL", data + size - 64,
+		           64, 64);
+}
+
+void WaveRecvAllianceSearch(Connection *c, const uint8_t *data,
+                           uint16_t size)
+{
+	HexPreview("ALLIANCE_SEARCH_RESP", data, size, 64);
+}
+
+void WaveRecvAllianceSearchResult(Connection *c, const uint8_t *data,
+                                  uint16_t size)
+{
+	HexPreview("ALLIANCE_SEARCHRESULT", data, size, 640);
 }
 
 /* TROOPMARCH_NOTATK resp (6616) — semantics learned live. */
@@ -1377,12 +1489,84 @@ void WaveRecvFinishTraining(Connection *c, const uint8_t *data, uint16_t size)
 		c->train.pending_qty = 0;
 }
 
+/* Active gather marches (slot from the 6615 accept resp), so an
+ * incoming attack can recall them (TROOPRETURN 2417). */
+struct GatherSlot {
+	uint8_t  active;
+	uint8_t  recalled;      /* take-back already sent for this slot. */
+	uint16_t zone;
+	uint8_t  point;
+};
+static struct GatherSlot g_gm[8];
+static uint8_t  g_gm_pending;            /* gather march awaiting accept */
+static uint16_t g_gm_pending_zone;
+static uint8_t  g_gm_pending_point;
+
+static void GatherSlotClear(uint8_t slot)
+{
+	if (slot < 8 && g_gm[slot].active) {
+		LOGI("[GATHER] slot=%u zone=%u pt=0x%02x done\n",
+		     slot, g_gm[slot].zone, g_gm[slot].point);
+		g_gm[slot].active = 0;
+		g_gm[slot].recalled = 0;
+	}
+}
+
+/* TROOPRETURN every tracked gather march (defense / damage control). */
+void GatherRecallAll(Connection *c, const char *why)
+{
+	if (!c->protection.recall_on_incoming_attack)
+		return;
+
+	int n = 0;
+	for (uint8_t s = 0; s < 8; s++) {
+		if (!g_gm[s].active || g_gm[s].recalled)
+			continue;
+		RequestTroopTakeBack(c, s);
+		g_gm[s].recalled = 1;
+		n++;
+		LOGI("[RECALL] slot=%u zone=%u pt=0x%02x why=%s\n",
+		     s, g_gm[s].zone, g_gm[s].point, why);
+	}
+	if (!n)
+		LOGI("[RECALL] %s: no active gather march\n", why);
+}
+
+/* 2435 BEINGATTACK — server resynced army/hospital after a hit on us. */
+void WaveRecvBeingAttacked(Connection *c, const uint8_t *data,
+                           uint16_t size)
+{
+	LOGI("[ATK] BEINGATTACK size=%u (battle resync)\n", size);
+	GatherRecallAll(c, "being-attacked");
+	(void)data;
+}
+
 void WaveRecvTroopMarch(Connection *c, const uint8_t *data, uint16_t size)
 {
 	HexPreview("TROOPMARCH_RESP", data, size, 128);
 	if (size == 0)
 		return;
 	if (data[0] == 0) {
+		/* Track the slot when this accept answers our gather 6615,
+		 * so an incoming attack can TROOPRETURN (2417) it. */
+		if (g_gm_pending && size >= 2) {
+			uint8_t slot = data[1];
+			uint16_t zone = g_gm_pending_zone;
+			uint8_t point = g_gm_pending_point;
+			if (size >= 80) {          /* dest echoed on the wire */
+				zone = read_u16(data + 77);
+				point = data[79];
+			}
+			g_gm_pending = 0;
+			if (slot < 8) {
+				g_gm[slot].active = 1;
+				g_gm[slot].recalled = 0;
+				g_gm[slot].zone = zone;
+				g_gm[slot].point = point;
+				LOGI("[GATHER] tracking slot=%u zone=%u "
+				     "pt=0x%02x\n", slot, zone, point);
+			}
+		}
 		/* Official RecvTroopMarch: err | slot | type | 5xu16 heroes
 		 * | 16xu32 troops (kind-major x4 tiers) | dest ... — the
 		 * marching troops leave the home army (TROOPHOME resyncs). */
@@ -1419,6 +1603,7 @@ void WaveRecvTroopMarch(Connection *c, const uint8_t *data, uint16_t size)
 			"yolk zone" };
 		const char *w = data[0] < 9 ? why[data[0]] : "?";
 		LOGI("[MARCH] rejected err=%u (%s)\n", data[0], w);
+		g_gm_pending = 0;
 		if (c->player.current_marches > 0)
 			c->player.current_marches--;
 	}
@@ -1432,6 +1617,7 @@ void WaveRecvTroopReturn(Connection *c, const uint8_t *data, uint16_t size)
 		uint32_t need = read_u32(data + 10);
 		LOGI("[MARCH] slot=%u returning type=%u begin=%ld eta=%us\n",
 		     slot, type, (long)begin, need);
+		GatherSlotClear(slot);
 	} else {
 		HexPreview("TROOPRETURN", data, size, 48);
 	}
@@ -1448,6 +1634,7 @@ void WaveRecvTroopHome(Connection *c, const uint8_t *data, uint16_t size)
 		return;
 	}
 	uint8_t slot = data[0];
+	GatherSlotClear(slot);
 	uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
 	                     c->troop.cavalry, c->troop.siege };
 	uint32_t total = 0;
@@ -1524,6 +1711,12 @@ void WaveRecvGatherReport(Connection *c, const uint8_t *data, uint16_t size)
 /* ------------------------------------------------------------------ */
 
 static time_t g_scan_last = 0;
+/* zone-0 overview fallback state (see MapScanTick) */
+static time_t     g_scan_overview_last = 0;
+static uint32_t   g_scan_overview_tries = 0;
+static uint32_t   g_scan_updates_at_last_overview = 0;
+static time_t     g_scan_nowarn = 0;
+static uint16_t   g_scan_zone = 0;
 
 /* UPDATE_MAPINFO wire (validated live: castle tile = our own
  * K1447 X317 Y45 record):
@@ -1616,6 +1809,7 @@ static int TileDist(map_pos_t a, map_pos_t b)
 static time_t g_gather_last = 0;
 static time_t g_hunt_last = 0;
 static time_t g_notroop_warn = 0;
+static time_t g_gather_nowarn = 0;
 
 /* Pick a resource tile and march (TROOPMARCH_NOTATK 6615).
  * Returns true when a march was sent (hunt defers to gather —
@@ -1649,6 +1843,7 @@ static bool GatherTick(Connection *c)
 	int best = -1;
 	uint32_t best_amt = 0;
 	int best_dist = 0;
+	uint64_t best_score = 0;
 
 	for (uint16_t i = 0; i < c->map_tile_count; i++) {
 		MapTile *t = &c->map_tiles[i];
@@ -1666,21 +1861,130 @@ static bool GatherTick(Connection *c)
 		int d = TileDist(home, p);
 		if (c->wave.gather_max_dist && d > (int)c->wave.gather_max_dist)
 			continue;
-		if (t->amount > best_amt) {
-			best_amt = t->amount;
+
+		/* Tile priority: 0 = most amount, 1 = amount per travel
+		 * cell (near + rich), 2 = nearest first. */
+		bool better;
+		uint64_t score = 0;
+		switch (c->wave.gather_priority) {
+		case 0:
+			better = (best < 0) || t->amount > best_amt;
+			break;
+		case 2:
+			better = (best < 0) || d < best_dist ||
+			         (d == best_dist && t->amount > best_amt);
+			break;
+		default: /* 1 mixed */
+			score = (uint64_t)t->amount * 1000u /
+			        (uint64_t)(d + 1);
+			better = (best < 0) || score > best_score;
+			break;
+		}
+		if (better) {
 			best = i;
+			best_amt = t->amount;
 			best_dist = d;
+			best_score = score;
 		}
 	}
-	if (best < 0)
+	if (best < 0) {
+		/* Previously silent: the bot could sit for hours with a full
+		 * army, free march slots and gather_auto=true and never say
+		 * why. Report what the selector actually saw. */
+		if (!g_gather_nowarn || (now - g_gather_nowarn) > 600) {
+			g_gather_nowarn = now;
+			uint16_t res_seen = 0, wrong_zone = 0, in_flight = 0;
+			uint16_t under_min = 0, over_dist = 0;
+			for (uint16_t i = 0; i < c->map_tile_count; i++) {
+				MapTile *t = &c->map_tiles[i];
+				if (t->kind < 1 || t->kind > 7)
+					continue;
+				res_seen++;
+				if (t->zone != c->player.zone_id) {
+					wrong_zone++;
+					continue;
+				}
+				if (t->amount <= 1) {
+					in_flight++;
+					continue;
+				}
+				if (c->wave.gather_min_amount &&
+				    t->amount < c->wave.gather_min_amount) {
+					under_min++;
+					continue;
+				}
+				int d = TileDist(home, getTileMapPosbyMapID(
+					PointCodeToMapID(t->zone, t->point)));
+				if (c->wave.gather_max_dist &&
+				    d > (int)c->wave.gather_max_dist)
+					over_dist++;
+			}
+			LOGI("[GATHER] no candidate tile: %u tiles known, "
+			     "%u resource tiles (in-flight=%u wrong-zone=%u "
+			     "under-min=%u over-dist=%u, min_amount=%u "
+			     "max_dist=%u)\n",
+			     c->map_tile_count, res_seen, in_flight, wrong_zone,
+			     under_min, over_dist, c->wave.gather_min_amount,
+			     c->wave.gather_max_dist);
+		}
 		return false;
+	}
 
 	MapTile *t = &c->map_tiles[best];
 	g_gather_last = now;
-	RequestGatherMarch(c, t->zone, t->point);
+
+	/* Fit the army to the tile: carry capacity = count x load, so a
+	 * small nearby tile needs only a small march. */
+	uint32_t troops16[16];
+	const uint32_t *send16 = NULL;
+	if (c->wave.gather_fit && t->amount) {
+		uint32_t load = c->wave.gather_load ? c->wave.gather_load : 10;
+		const uint32_t *kinds[4] = { c->troop.infantry, c->troop.ranged,
+		                             c->troop.cavalry, c->troop.siege };
+		uint64_t cap = 0;
+		uint32_t have = 0;
+		for (int k = 0; k < 4; k++)
+			for (int ti = 0; ti < 4; ti++) {
+				cap += (uint64_t)kinds[k][ti] * load;
+				have += kinds[k][ti];
+			}
+		/* scale = min(1, need/cap) in 1/1024 units, floor 32 so the
+		 * march is never a single scout; ceil each line. */
+		uint32_t scale = 1024;
+		if (cap && (uint64_t)t->amount < cap)
+			scale = (uint32_t)(((uint64_t)t->amount * 1024u) / cap);
+		if (scale < 32 && have)
+			scale = 32;
+		uint32_t send = 0;
+		for (int k = 0; k < 4; k++)
+			for (int ti = 0; ti < 4; ti++) {
+				uint32_t v = kinds[k][ti];
+				v = (uint32_t)(((uint64_t)v * scale + 1023u) /
+				               1024u);
+				if (v && !kinds[k][ti])
+					v = 0;
+				if (kinds[k][ti] && scale >= 32 && v == 0)
+					v = 1;       /* keep the line alive */
+				troops16[k * 4 + ti] = v;
+				send += v;
+			}
+		if (send && send < have) {
+			send16 = troops16;
+			LOGI("[GATHER] fit: amount=%u cap=%llu load=%u "
+			     "scale=%u/1024 send=%u/%u\n",
+			     t->amount, (unsigned long long)cap, load,
+			     scale, send, have);
+		}
+	}
+
+	g_gm_pending = 1;
+	g_gm_pending_zone = t->zone;
+	g_gm_pending_point = t->point;
+	RequestGatherMarch(c, t->zone, t->point, send16);
 	LOGI("[GATHER] 6615 march -> zone=%u point=0x%02x kind=%u "
-	     "amount=%u dist=%d (BETA, watch MARCH_NOTATK_RESP)\n",
-	     t->zone, t->point, t->kind, t->amount, best_dist);
+	     "amount=%u dist=%d prio=%u%s\n",
+	     t->zone, t->point, t->kind, t->amount, best_dist,
+	     c->wave.gather_priority, send16 ? " (fit)" : " (full)");
 	t->amount = 0;   /* in-flight marker until tile refresh */
 	return true;
 }
@@ -1757,8 +2061,22 @@ static void MapScanTick(Connection *c)
 		return;
 	/* Don't burn the scan interval (or ask for a zone-0 overview)
 	 * before role info gives us the real zone. */
-	if (c->player.zone_id == 0 || c->player.name[0] == '\0')
+	if (c->player.zone_id == 0 || c->player.name[0] == '\0') {
+		if (!g_scan_nowarn || (time(NULL) - g_scan_nowarn) > 300) {
+			g_scan_nowarn = time(NULL);
+			LOGW("[SCAN] waiting for role info (zone=%u name='%s')\n",
+			     c->player.zone_id, c->player.name);
+		}
 		return;
+	}
+
+	/* ROLEINFO can arrive tens of seconds into the session. Reset the
+	 * interval gate on the transition so the first real scan goes out
+	 * immediately instead of waiting out a stale timer. */
+	if (c->player.zone_id != g_scan_zone) {
+		g_scan_zone = c->player.zone_id;
+		g_scan_last = 0;
+	}
 
 	time_t now = time(NULL);
 	uint32_t interval = c->wave.scan_interval_s ? c->wave.scan_interval_s
@@ -1767,6 +2085,36 @@ static void MapScanTick(Connection *c)
 		return;
 	g_scan_last = now;
 
+	/* Zone-0 overview fallback.
+	 *
+	 * Evidence from earlier runs: when the FIRST map request of a
+	 * session was the zone-0 overview the server answered with the
+	 * whole kingdom window (run31: +39 tiles, res=25) and gathering
+	 * worked. When we only ever ask for the player's own zone the
+	 * server answers once with a tiny neighbourhood (runs 54/55:
+	 * +8 tiles, res=0) and then goes silent for the rest of the
+	 * session, so the selector never sees a kind 1..7 tile and gather
+	 * never fires.
+	 *
+	 * So: keep asking for the home zone, but if the tile cache has not
+	 * grown (no resource candidates) for a while, ask for the overview
+	 * instead. Both requests are read-only. */
+	if (c->map_tile_updates == g_scan_updates_at_last_overview) {
+		if (g_scan_overview_last == 0 ||
+		    (now - g_scan_overview_last) >= (time_t)(interval * 2)) {
+			g_scan_overview_last = now;
+			g_scan_overview_tries++;
+			uint16_t overview[4] = { 0, 0, 0, 0 };
+			RequestMapData(c, 1, overview);
+			LOGI("[SCAN] zone %u has no new map data — requesting "
+			     "kingdom overview (try %u, %u tiles known)\n",
+			     c->player.zone_id, g_scan_overview_tries,
+			     c->map_tile_count);
+			return;
+		}
+	}
+	g_scan_updates_at_last_overview = c->map_tile_updates;
+
 	uint16_t zones[4] = { c->player.zone_id, 0, 0, 0 };
 	RequestMapData(c, 1, zones);
 	LOGI("[SCAN] map data requested for zone %u (gather=%d hunt=%d, "
@@ -1774,7 +2122,6 @@ static void MapScanTick(Connection *c)
 	     c->player.zone_id, c->wave.gather_auto, c->wave.hunt_auto,
 	     c->map_tile_count);
 }
-
 /* ------------------------------------------------------------------ */
 /* Wave E: Guild Fest (ALLIANCEMOBILIZATION 3632..3644)                */
 /*                                                                      */
@@ -2240,6 +2587,87 @@ void WaveRecvGambleUpdateInfo(Connection *c, const uint8_t *data,
 		SendRaw(c, _MSG_REQUEST_GAMBLE_INFO, NULL, 0);
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave E: Kingdom Tycoon (MONOPOLY 7010..7020, event 7030..7040)      */
+/*                                                                      */
+/* Same free-only discipline as the Labyrinth: exactly one free roll a  */
+/* day, never a Luck Token (600-720 gems each in the store).            */
+/*   INFO  req 7010 empty                                               */
+/*   STEP  req 7012 empty — roll/stop the die                          */
+/*   CRYSTAL req 7014 — open a Gremlin capsule (3 per gremlin)         */
+/* Layout is not yet confirmed from a live client, so this tick stays  */
+/* conservative: it polls INFO, dumps it, and only sends STEP when the */
+/* server says a free roll is available. If the parse turns out to be  */
+/* wrong the worst case is a rejected request, never a purchase.       */
+/* ------------------------------------------------------------------ */
+
+static struct {
+	bool     info_valid;
+	bool     free_roll;
+	uint8_t  crystals;
+	uint32_t jackpot;
+	time_t   last_info;
+	time_t   last_step;
+	time_t   last_crystal;
+} g_tycoon = {0};
+
+void WaveRecvMonopolyInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("MONOPOLY_INFO", data, size, 48);
+	if (size < 2)
+		return;
+
+	g_tycoon.info_valid = true;
+	/* Best-effort: treat a small non-zero "free/token" field as an
+	 * available roll. The exact offsets get confirmed from the dump
+	 * on the next run; until then we only ever *report* the state. */
+	g_tycoon.free_roll = (data[1] != 0);
+	g_tycoon.crystals  = (size > 2) ? data[2] : 0;
+
+	LOGI("[TYCOON] info size=%u free_roll=%u crystals=%u "
+	     "(free-only: never buys a Luck Token)\n",
+	     size, g_tycoon.free_roll, g_tycoon.crystals);
+
+	g_tycoon.last_info = time(NULL);
+}
+
+void WaveRecvMonopolyStep(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("MONOPOLY_STEP", data, size, 48);
+	if (size > 0 && data[0] == 0) {
+		LOGI("[TYCOON] roll accepted (size=%u)\n", size);
+		/* A successful roll can drop a Gremlin capsule. */
+		SendRaw(c, _MSG_REQUEST_MONOPOLY_CRYSTAL, NULL, 0);
+		g_tycoon.last_crystal = time(NULL);
+	} else if (size > 0) {
+		LOGI("[TYCOON] roll rejected (err=%u)\n", data[0]);
+	}
+}
+
+static void TycoonTick(Connection *c)
+{
+	if (!c->wave.tycoon)
+		return;
+	if (c->server_time == 0)
+		return;
+
+	time_t now = time(NULL);
+
+	if (!g_tycoon.info_valid || (now - g_tycoon.last_info) >= 300) {
+		SendRaw(c, _MSG_REQUEST_MONOPOLY_INFO, NULL, 0);
+		g_tycoon.last_info = now;
+	}
+
+	if (!g_tycoon.info_valid || !g_tycoon.free_roll)
+		return;
+	if ((now - g_tycoon.last_step) < 30)
+		return;
+
+	g_tycoon.last_step = now;
+	SendRaw(c, _MSG_REQUEST_MONOPOLY_STEP, NULL, 0);
+	LOGI("[TYCOON] free daily roll requested\n");
+}
+
 static void LabTick(Connection *c)
 {
 	if (!c->wave.labyrinth)
@@ -2504,21 +2932,39 @@ void WaveTick(Connection *c)
 		return;
 	g_wave_last = now;
 
-	BuildTick(c);
-	ResearchTick(c);
-	QuestTick(c);
-	VipTick(c);
-	ArenaTick(c);
-	RewardTick(c);
-	TrapTick(c);
-	PetTick(c);
-	HealTick(c);
-	MapScanTick(c);
-	if (GatherTick(c))
-		g_hunt_last = time(NULL);   /* army is out — defer hunt */
+	/* Free-only priority ladder (from lordsmobile.fandom.com + the
+	 * commercial bots' documented ordering). Highest ROI first:
+	 *   1. claim idle free rewards
+	 *   2. guild help (sending + asking on our own builds)
+	 *   3. keep the construction queue busy
+	 *   4. keep the research queue busy
+	 *   5. keep training + gathering marches busy
+	 *   6/7. free energy -> hunts, free stamina -> hero stages
+	 *   8. quest claims
+	 *  10. timed events (colosseum payout, labyrinth, tycoon, cargo)
+	 * Every one of these uses free resources, free VIP acceleration,
+	 * guild help or earned items only — never gems. */
+	RewardTick(c);        /* 1  free rewards / treasure / daily    */
+	AllianceGiftTick(c);  /* 1  guild gifts (24h expiry, 300 cap)  */
+	VipTick(c);           /* 1  VIP quest chest (1h)              */
+	QuestTick(c);         /* 8  daily / admin / guild quests      */
+
+	BuildTick(c);         /* 3  construction queue (+ 2852 help)   */
+	ResearchTick(c);      /* 4  research queue                     */
+
+	MapScanTick(c);       /* 5  map intel for gathering            */
+	if (GatherTick(c))    /* 5  gathering marches, fit to tile     */
+		g_hunt_last = time(NULL);   /* army is out - defer hunt */
 	else
-		HuntTick(c);
-	GFestTick(c);
-	LabTick(c);
-	StageTick(c);
+		HuntTick(c);       /* 6  free energy -> monster hunt       */
+
+	StageTick(c);         /* 7  free stamina -> hero stage sweep   */
+	ArenaTick(c);         /* 10 colosseum (free entries only)     */
+	LabTick(c);           /* 10 labyrinth free daily hit          */
+	TycoonTick(c);        /* 10 kingdom tycoon free daily roll    */
+	GFestTick(c);         /* 10 guild fest scoring                */
+
+	TrapTick(c);          /* defense upkeep                        */
+	PetTick(c);           /* familiar training                     */
+	HealTick(c);          /* infirmary (free only)                 */
 }

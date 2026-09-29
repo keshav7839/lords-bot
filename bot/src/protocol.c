@@ -399,7 +399,8 @@ void RequestHealTroops(Connection *c, uint8_t style)
  * convention documented in connection.h. Heroes default to 0
  * (gathering does not require them).
  */
-void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point)
+void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point,
+                        const uint32_t *troops16)
 {
 	const uint32_t *kinds[4] = {
 		c->troop.infantry, c->troop.ranged,
@@ -419,7 +420,9 @@ void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point)
 	}
 	for (int k = 0; k < 4; k++)             /* 16 troop counts */
 		for (int t = 0; t < tiers; t++) {
-			write_u32(c->data + c->size, kinds[k][t]);
+			uint32_t v = troops16 ? troops16[k * 4 + t]
+			                      : kinds[k][t];
+			write_u32(c->data + c->size, v);
 			c->size += 4;
 		}
 	write_u16(c->data + c->size, zone); c->size += 2;
@@ -681,8 +684,28 @@ void RequestAllianceMemberInfo(Connection *c) {
 	send_packet(c, true);
 }
 
-void RequestHelpAllianceMember(Connection *c, uint16_t record_sn_count, const uint32_t *record_sn)
+/* Ask the guild to help MY construction / research (opcode 2852).
+ *
+ * This is the single highest-value free accelerator in the game: each
+ * help cuts the remaining timer by 1% (min 1 minute), up to 30 helps
+ * per project at Castle 25, it costs nothing, and the sender earns guild
+ * coins. The bot only ever sent 2855 (help SOMEONE else); this direction
+ * had a response case but no sender, so the bot never asked for help on
+ * its own builds. */
+void RequestRequestOwnHelp(Connection *c)
 {
+	c->size = 2;
+
+	write_u16(c->data + c->size, 0x0B14); /* _MSG_REQUEST_ALLIANCE_HELP */
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
+void RequestHelpAllianceMember(Connection *c, uint16_t record_sn_count, const uint32_t *record_sn){
 	c->size = 2;
 	
 	write_u16(c->data + c->size, 0x0b27);
@@ -1494,6 +1517,15 @@ void RecvLoginRoleInfo(Connection *c, const uint8_t *data, uint16_t size)
 {
 	uint16_t offset = 0;
 	
+	/* Evidence dump: the fixed offsets below produce zone_id=0 /
+	 * name="" against this server, which silently disabled map scan,
+	 * gather, hunt and training. One dump pins the real layout. */
+	static bool g_roleinfo_dumped = false;
+	if (!g_roleinfo_dumped && size > 0) {
+		g_roleinfo_dumped = true;
+		WaveRecvDump(c, "ROLEINFO", data, size);
+	}
+	
 	// printf("\n\n\n");
 	
 	uint32_t ReadPackNum = read_u32(data + offset); offset += 4;
@@ -1717,12 +1749,18 @@ void format_number2(uint64_t num, char *out, size_t size) {
 #include <time.h>
 
 
-void format_duration(time_t current_time, time_t expiry_time) {
+/* Renders a duration into buf. Returns buf.
+ * Used to be a bare printf() chain, which interleaved mid-line with
+ * LOGI (stderr) and was lost entirely whenever stdout was block
+ * buffered into a file. Callers now emit a single LOGI line. */
+const char *format_duration_str(char *buf, size_t len,
+                                time_t current_time, time_t expiry_time)
+{
     long diff = (long)(expiry_time - current_time);
 
     if (diff <= 0) {
-        printf("Expired\n");
-        return;
+        snprintf(buf, len, "expired");
+        return buf;
     }
 
     long days = diff / 86400;
@@ -1733,20 +1771,24 @@ void format_duration(time_t current_time, time_t expiry_time) {
 
     long minutes = diff / 60;
     long seconds = diff % 60;
-    
-    if (days > 0) {
-    printf("%ldd %ldh %ldm %lds\n",
-           days, hours, minutes, seconds);
-} else if (hours > 0) {
-    printf("%ldh %ldm %lds\n",
-           hours, minutes, seconds);
-} else if (minutes > 0) {
-    printf("%ldm %lds\n",
-           minutes, seconds);
-} else {
-    printf("%lds\n", seconds);
+
+    if (days > 0)
+        snprintf(buf, len, "%ldd %ldh %ldm %lds",
+                 days, hours, minutes, seconds);
+    else if (hours > 0)
+        snprintf(buf, len, "%ldh %ldm %lds", hours, minutes, seconds);
+    else if (minutes > 0)
+        snprintf(buf, len, "%ldm %lds", minutes, seconds);
+    else
+        snprintf(buf, len, "%lds", seconds);
+
+    return buf;
 }
 
+void format_duration(time_t current_time, time_t expiry_time) {
+    char buf[64];
+    format_duration_str(buf, sizeof(buf), current_time, expiry_time);
+    printf("%s\n", buf);
 }
 
 
@@ -1871,11 +1913,18 @@ bool ShouldBuyItem(Connection *c, const MarketItem *item)
 
 bool ShouldBuyItem(const MarketItem *item)
 {
-	// Return true; Buy everything 
-	return true;
-	
+	/* FREE-ITEMS RULE: the cargo/black-market stock is bought with
+	 * castle resources. An unconditional `return true;` sat above
+	 * this switch, so the bot spent resources on every 6h refresh
+	 * including junk and resource-for-resource swaps. Only take the
+	 * items that are actually worth resources:
+	 *   - free-ish speed-ups (helps the queues without gems)
+	 *   - research / merging speed-ups (cannot be bought with gems,
+	 *     so cargo stock is the only source)
+	 *   - anima (event currency with no gem route)
+	 * Bright Talent Orbs are deliberately NOT auto-bought: a proper
+	 * talent build must be curated first. */
 	switch (item->item_id) {
-		case BRIGHT_TALENT_ORB:
 		case SPEED_UP_30_MINUTE:
 		case SPEED_UP_60_MINUTE:
 		case SPEED_UP_3_HOUR:
@@ -2122,8 +2171,12 @@ void RecvBlackMarket_Data(Connection *c, const uint8_t *data) {
 	}
 	
 	// printf("[MARKET RESET] ");
-	LOGI("Black Market resets in ");
-	format_duration(c->server_time, c->market.refresh_time);
+	{
+		char dur[64];
+		format_duration_str(dur, sizeof(dur), c->server_time,
+		                    c->market.refresh_time);
+		LOGI("[MARKET] Black Market resets in %s\n", dur);
+	}
 	
 	TryEvaluateBlackMarket(c);
 }
@@ -2277,6 +2330,55 @@ uint32_t GetTradingPostSupplyCapacity(uint8_t level) {
 	return trading_post_supply_capacity[level];
 }
 
+/* Ask the server for the role/character info (1008 ROLEINFO).
+ *
+ * 1008 is the ONLY packet that carries zone_id, point_id, the player
+ * name and the troop roster. On this server it is not pushed during
+ * login, so c->player stayed {zone_id=0, name="", troop.total=0}, which
+ * silently disabled: map scanning, gathering, hunting (all of them gate
+ * on zone_id), and training (gates on name). The 1101 ROLE_UPDATEINFO
+ * pushes that do arrive carry only resource deltas.
+ *
+ * 1004 _MSG_LOGIN_REQUESTLOGIN is the request half of that pair. Empty
+ * payload — the account comes from the authenticated connection. */
+void RequestRoleInfo(Connection *c)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_LOGIN_REQUESTLOGIN);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+	LOGI("[LOGIN] requested role info (1004 -> 1008)\n");
+}
+
+static bool g_builddata_logged = false;
+
+/* Fetch the building list (the client gets this as a login push, but on
+ * this server 2001 _MSG_RESP_BUILDINGINFO never arrives — verified over
+ * many runs: building_count stayed 0, so WaveUpgradeOne could never pick
+ * a target and no upgrade was ever attempted).
+ *
+ * The request pairs with the 2001 response, i.e. opcode 2000, which was
+ * missing from packet_map.h. Empty payload: the account is implied by
+ * the connection, exactly like CLIENTINITOVER. */
+void RequestAllBuildData(Connection *c)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, 2000);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+	LOGI("[BUILD] requested building list (2000)\n");
+}
+
 void RecvAllBuildData(Connection *c, const uint8_t *data)
 {
 	uint16_t offset = 0;
@@ -2312,6 +2414,12 @@ void RecvAllBuildData(Connection *c, const uint8_t *data)
 	}
 	
 	c->supply_capacity += GetTradingPostSupplyCapacity(trading_post_lv);
+	
+	if (c->building_count > 0 && !g_builddata_logged) {
+		g_builddata_logged = true;
+		LOGI("[BUILD] building list received: %u buildings "
+		     "(trading post lv=%u)\n", c->building_count, trading_post_lv);
+	}
 	
 }
 
@@ -2587,10 +2695,13 @@ void RecvAllianceGiftOpen(Connection *c, const uint8_t *data) {
 	
 	uint32_t sn = read_u32(data + offset); offset += 4;
 	
-	printf("[OPENED] GIFT ID %u\n", sn);
+	LOGI("[GIFT] opened sn=%u (err=%u)\n", sn, b);
 	
-	return;
-	
+	/* SECURITY/FREE-ITEMS NOTE: this used to `return;` immediately
+	 * above, which left gift_state stuck in OPENING and stalled the
+	 * whole collection loop after the first gift. Gifts expire in 24h
+	 * and are silently destroyed past a 300-unopened cap, so the
+	 * open -> mark -> delete cycle has to actually run. */
 	for (int i = 0; i < c->alliance.gift_count; i++) {
 		AllianceGift *gift = &c->alliance.gifts[i];
 		
@@ -2599,7 +2710,7 @@ void RecvAllianceGiftOpen(Connection *c, const uint8_t *data) {
             
         gift->status = 0xFF;
 
-        RequestDeleteAllianceGiftBox(c, 0xFFFFFFFF);
+        RequestDeleteAllianceGiftBox(c, sn);
         c->alliance.gift_state = GIFT_STATE_DELETING;
         break;
 	}
@@ -2714,14 +2825,16 @@ void RecvAllianceInfo(Connection *c, const uint8_t *data) {
 	c->RoleAlliance.Rank = (AllianceRank)read_u8(data + offset); offset += 1;
 	c->RoleAlliance.Apply = read_u8(data + offset); offset += 1;
 	c->RoleAlliance.Money = read_u32(data + offset); offset += 4;
-	
+
+	LOGI("[ALLY] info push channel=%u rank=%u apply=%u money=%u\n",
+	     c->RoleAlliance.Channel, (unsigned)c->RoleAlliance.Rank,
+	     c->RoleAlliance.Apply, c->RoleAlliance.Money);
 	return;
 }
 
-void RecvBuildingQueue(Connection *c, const uint8_t *data)
+void RecvBuildingQueue(Connection *c, const uint8_t *data, uint16_t size)
 {
 	uint16_t offset = 0;
-	
 	
 	uint8_t queue_build_type = read_u8(data + offset); offset += 1;
 	uint16_t position = read_u16(data + offset); offset += 2;
@@ -2736,15 +2849,18 @@ void RecvBuildingQueue(Connection *c, const uint8_t *data)
 	c->build_queue.total_time  = total_time;
 	c->build_queue.active      = (total_time > 0);
 	
+	/* Evidence dump: the field layout here is still unverified against
+	 * the real client. An earlier offset guess produced position=3574
+	 * (0x0DF6), which is not a building slot, and queue_idle() then
+	 * reported "busy" forever so BuildTick never fired once. Dump the
+	 * raw bytes so the next run gives us ground truth to fix against. */
+	LOGI("[BUILD] queue raw type=%u pos=%u id=%u lvl=%u start=%llu "
+	     "total=%u (payload %uB)\n",
+	     queue_build_type, position, build_id, level,
+	     (unsigned long long)start_time, total_time, size);
+	WaveRecvDump(c, "BUILDINGEVENT", data, size);
+	
 	return;
-	
-	printf("queue_build_type: %u\n", queue_build_type);
-	printf("position: %u\n", position);
-	printf("build_id: %u\n", build_id);
-	printf("level: %u\n", level);
-	printf("start_time: %lu\n", start_time);
-	printf("total_time: %u\n", total_time);
-	
 }
 
 typedef enum
@@ -2923,6 +3039,10 @@ void RecvUpdateWatchTowerAddLineInfo(Connection *c, const uint8_t *data) {
 	uint32_t MarchTimeData_RequireTime = read_u32(data + offset); offset += 4;
 	
 	EWATCHTOWER_LINE_TARGET ewatchtower_LINE_TARGET = (EWATCHTOWER_LINE_TARGET)read_u8(data + offset);  offset += 1;
+
+	LOGI("[WT] addline id=%u type=%u idx=%u target=%u eta=%us\n",
+	     LineID, LineType, Index, (unsigned)ewatchtower_LINE_TARGET,
+	     MarchTimeData_RequireTime);
 	
 	/*
 	printf("\nRecvUpdateWatchTowerAddLineInfo\n");
@@ -2937,18 +3057,24 @@ void RecvUpdateWatchTowerAddLineInfo(Connection *c, const uint8_t *data) {
 	printf("ewatchtower_LINE_TARGET: %u\n", ewatchtower_LINE_TARGET);
 	*/
 	
-	switch (LineType) {
-		case 5: 
-		case 7:
-			switch (ewatchtower_LINE_TARGET) {
-				case EWATCHTOWER_LINE_TARGET_CAPITAL:
-					WhenEnemyArmyApproachingTurf(c);
-					printf("[WARNING] Enemy army is invading turf\n");
-					break;
-				case EWATCHTOWER_LINE_TARGET_CAMP:
-					printf("[WARNING] Enemy army is invading camp\n");
-					WhenEnemyArmyApproachingCamp(c, Index);
-					break;
+		switch (LineType) {
+			case 5: 
+			case 7:
+				switch (ewatchtower_LINE_TARGET) {
+					case EWATCHTOWER_LINE_TARGET_CAPITAL:
+						WhenEnemyArmyApproachingTurf(c);
+						/* Bring every active gather march home. */
+						GatherRecallAll(c, "incoming-attack");
+						printf("[WARNING] Enemy army is invading turf\n");
+						break;
+					case EWATCHTOWER_LINE_TARGET_CAMP:
+						printf("[WARNING] Enemy army is invading camp\n");
+						WhenEnemyArmyApproachingCamp(c, Index);
+						/* CAMP = our troops stationed on the map
+						 * (gathering tile): bring every gather
+						 * march back to the kingdom. */
+						GatherRecallAll(c, "gather-tile-attack");
+						break;
 				case EWATCHTOWER_LINE_TARGET_AMBUSH:
 					printf("Enemy army has set an ambush\n");
 					// EAttackKind.None_Attack
@@ -2959,12 +3085,19 @@ void RecvUpdateWatchTowerAddLineInfo(Connection *c, const uint8_t *data) {
 				case EWATCHTOWER_ADDLINE_WONDER4:
 				case EWATCHTOWER_ADDLINE_WONDER5:
 				case EWATCHTOWER_ADDLINE_WONDER6:
-				case EWATCHTOWER_ADDLINE_WONDER7:
-					printf("[WARNING] Enemy invading wonder\n");
-					// EAttackKind.Wonder_Attack
-					break;
-			}
-			break;
+					case EWATCHTOWER_ADDLINE_WONDER7:
+						printf("[WARNING] Enemy invading wonder\n");
+						// EAttackKind.Wonder_Attack
+						break;
+					default:
+						printf("[WT] addline type=5/7 "
+						       "target=%u unhandled\n",
+						       (unsigned)ewatchtower_LINE_TARGET);
+						GatherRecallAll(c,
+							"attack-line-unhandled");
+						break;
+				}
+				break;
 		case 6:
 			switch (ewatchtower_LINE_TARGET) {
 				case EWATCHTOWER_LINE_TARGET_CAPITAL:
@@ -3027,11 +3160,26 @@ void RecvUpdateWatchTowerAddLineInfo(Connection *c, const uint8_t *data) {
 					break;
 			}
 			break;
-		case 11:
-			printf("EAttackKind.Gather\n");
+		case 11: 
+			/* Gather-related line — semantics unconfirmed on this
+			 * server (may be our own departure). Log for diagnosis;
+			 * recall only on definite turf attacks (case 5/7). */
+			printf("[WT] line=11 idx=%u target=%u id=%u (gather line)\n",
+			       Index, (unsigned)ewatchtower_LINE_TARGET, LineID);
 			break;
 		case 12: 
-			printf("Someone approaching EAttackKind.Wonder_GatherAttack attacking\n");
+			/* Official: target CAPITAL/AMBUSH -> EAttackKind.
+			 * GatherAttack, i.e. someone attacking our gathering. */
+			if (ewatchtower_LINE_TARGET == EWATCHTOWER_LINE_TARGET_CAPITAL ||
+			    ewatchtower_LINE_TARGET == EWATCHTOWER_LINE_TARGET_AMBUSH) {
+				printf("[WARNING] Enemy attacking our gather "
+				       "(target=%u)\n",
+				       (unsigned)ewatchtower_LINE_TARGET);
+				GatherRecallAll(c, "gather-attack-line");
+			} else {
+				printf("Someone approaching EAttackKind."
+				       "Wonder_GatherAttack attacking\n");
+			}
 			break;
 		case 13: 
 			printf("[INFO] Guild member is sending supplies\n");
@@ -4121,6 +4269,9 @@ void RecvTechnologyInfo(Connection *c, const uint8_t *data, uint16_t size) {
 	c->technology.research_tech = researchTech;
 	c->technology.finish_time   = num;
 	c->technology.total_time    = totalTime;
+
+	/* Keep the wave scheduler honest about the academy queue. */
+	WaveNotifyResearchState(c);
 	
 	/*
 	printf("\n\nRecvTechnologyInfo\n");

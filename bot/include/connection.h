@@ -322,6 +322,10 @@ typedef enum {
 typedef struct {
     bool auto_help;
     bool auto_open_gifts;
+    /* Ask the guild to help our OWN construction/research (2852).
+     * 1% off the remaining timer per help, up to 30 — free, and the
+     * sender earns guild coins. */
+    bool request_own_help;
     uint16_t gift_count;
     uint16_t gift_offset;
     
@@ -750,6 +754,7 @@ typedef struct {
 	bool     labyrinth;                  /* Hit Labyrinth while free/allowed. */
 	uint8_t  labyrinth_mode;             /* 0 Turbo (elite), 1 Normal. */
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
+	bool     tycoon;                     /* Kingdom Tycoon free daily roll. */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */
 
 	/* --- Wave F: hospital auto-heal (HEALINGTROOP 2426). */
@@ -763,6 +768,13 @@ typedef struct {
 	uint32_t gather_min_amount;          /* Skip resource tiles below this. */
 	uint16_t gather_max_dist;            /* Max tile distance from home. */
 	uint8_t  hunt_min_level;             /* Only hunt monsters at/above. */
+
+	/* --- Gather tile priority + army fit + recall-on-attack. */
+	uint8_t  gather_priority;            /* 0 amount, 1 mixed (amount/dist),
+	                                      *    2 nearest. */
+	bool     gather_fit;                 /* Size the march to the tile
+	                                      *    amount instead of full army. */
+	uint32_t gather_load;                /* Avg carry per troop when fitting. */
 
 	/* --- debug --- */
 	bool     log_packets;                /* Log every received packet type. */

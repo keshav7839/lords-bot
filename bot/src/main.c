@@ -254,12 +254,17 @@ void ProcessConnection(Connection *c)
 					disconnect(c);
 					// printf("Login error\n");
 					return;
-				case _MSG_CLIENT_LOGINTOLRESP: 
-					// kind = read_i32(s->buffer + s->parse_pos + 4);
-					
-					LOGE("Bootstrap Login failed session expired: %d\n", 0/*kind*/);
+				case _MSG_CLIENT_LOGINTOLRESP: {
+					const uint8_t *p = s->buffer + s->parse_pos + 4;
+					int kind = (int)read_i32(p);
+					LOGE("Bootstrap Login failed session expired: %d\n", kind);
+					LOGE("LOGINTOLRESP size=%u hex:", s->packet_size);
+					for (uint16_t k = 0; k + 4 < s->packet_size && k < 24; k++)
+						LOGE(" %02x", s->buffer[s->parse_pos + 4 + k]);
+					LOGE("\n");
 					disconnect(c);
 					return;
+				}
 				case _MSG_RESP_ACTIVE: 
 					c->server_time = read_u64(s->buffer + s->parse_pos + 4);
 					break;
@@ -307,7 +312,8 @@ void ProcessConnection(Connection *c)
 					
 					pos = getTileMapPosbyPointCode(c->player.zone_id, c->player.point_id);
 					
-					LOGI("Character: %s\n", c->player.name);
+					LOGI("Character: %s zone=%u point=%u\n", c->player.name,
+					     c->player.zone_id, c->player.point_id);
 					LOGI("Location: K:%u X:%u Y:%u\n", c->player.current_kingdom_id, pos.x, pos.y);
 					LOGI("VIP: %u\n", GetVIPLevel(c->player.vip_point ));
 					LOGI("Might: %lu\n", c->player.power);
@@ -349,6 +355,72 @@ void ProcessConnection(Connection *c)
 					printf("_MSG_RESP_ALLIANCE_HELP\n");
 					// RecvAllianceHelp(c, s->buffer + s->parse_pos + 4);
 					break;
+				case _MSG_RESP_ALLIANCE_APPLY:
+					WaveRecvAllianceApply(c, s->buffer + s->parse_pos + 4,
+					                      s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_NAMECHECK:
+					WaveRecvDump(c, "ALLIANCE_NAMECHECK_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_TAGCHECK:
+					WaveRecvDump(c, "ALLIANCE_TAGCHECK_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_CREATE:
+					WaveRecvDump(c, "ALLIANCE_CREATE_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_ALLIANCE_RESP_MAININFO:
+					WaveRecvDump(c, "ALLIANCE_MAININFO",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_USER_CANCELAPPLY:
+					WaveRecvDump(c, "ALLIANCE_CANCELAPPLY_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_QUIT:
+					WaveRecvDump(c, "ALLIANCE_QUIT_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_APPLYALLIANCELIST:
+					WaveRecvDump(c, "ALLIANCE_APPLYALLIANCELIST_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_RECOMMAND:
+					WaveRecvDump(c, "ALLIANCE_RECOMMAND_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_JOIN_APPLY:
+					WaveRecvDump(c, "ALLIANCE_JOIN_APPLY_RESP",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_SRARCHRESULT_EXTRA:
+					WaveRecvDump(c, "ALLIANCE_SEARCHRESULT_EXTRA",
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_PUBLICINFO:
+					WaveRecvAlliancePublicInfo(c, s->buffer + s->parse_pos + 4,
+					                           s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_SEARCH:
+					WaveRecvAllianceSearch(c, s->buffer + s->parse_pos + 4,
+					                       s->packet_size - 4);
+					break;
+				case _MSG_RESP_ALLIANCE_SRARCHRESULT:
+					WaveRecvAllianceSearchResult(c, s->buffer + s->parse_pos + 4,
+					                             s->packet_size - 4);
+					break;
 				case 0xB26:
 					RecvAllianceMemberNeedsHelp(c, s->buffer + s->parse_pos + 4);
 					break;
@@ -379,7 +451,7 @@ void ProcessConnection(Connection *c)
 					RecvAllianceInfo(c, s->buffer + s->parse_pos + 4);
 					break;
 				case _MSG_RESP_BUILDINGEVENT: 
-					RecvBuildingQueue(c, s->buffer + s->parse_pos + 4);
+					RecvBuildingQueue(c, s->buffer + s->parse_pos + 4, s->packet_size - 4);
 					break;
 				case _MSG_RESP_UPDATEWATCHTOWER_ADDLINE:
 					RecvUpdateWatchTowerAddLineInfo(c, s->buffer + s->parse_pos + 4);
@@ -544,6 +616,11 @@ void ProcessConnection(Connection *c)
 					WaveRecvGatherReport(c, s->buffer + s->parse_pos + 4,
 					                     s->packet_size - 4);
 					break;
+				case _MSG_RESP_BEINGATTACK:
+					WaveRecvBeingAttacked(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
 				case _MSG_RESP_SENDSCOUT:
 					WaveRecvDump(c, "SENDSCOUT_RESP",
 						s->buffer + s->parse_pos + 4, s->packet_size - 4);
@@ -636,6 +713,17 @@ void ProcessConnection(Connection *c)
 					break;
 				case _MSG_RESP_ALLIANCEMOBILIZATION_MISSION_DONE:
 					WaveRecvGuildFestDone(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				/* ---- Wave E: kingdom tycoon ---- */
+				case _MSG_RESP_MONOPOLY_INFO:
+					WaveRecvMonopolyInfo(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_MONOPOLY_STEP:
+					WaveRecvMonopolyStep(c,
 						s->buffer + s->parse_pos + 4,
 						s->packet_size - 4);
 					break;
@@ -1100,6 +1188,9 @@ bool CreateDefaultConfig(const char *filename)
 		
 		"# Wave C: scan the map around home zone (gather / hunt learning mode).\n"
 		"wave.gather_auto = false\n"
+		"wave.gather_priority = mixed\n"
+		"wave.gather_fit = true\n"
+		"wave.gather_load = 10\n"
 		"wave.hunt_auto = false\n"
 		"wave.hunt_max_level = 5\n"
 		"wave.scan_interval_s = 300\n\n"
@@ -1129,6 +1220,13 @@ bool CreateDefaultConfig(const char *filename)
 }
 
 int main(int argc, const char *argv[]) {
+	/* stdout is block-buffered when redirected to a file, so every
+	 * printf()-based diagnostic (format_duration, rally, shield, market
+	 * ... ) stayed in the buffer and was lost when the process exited.
+	 * LOGI writes to stderr (unbuffered), so the two streams also
+	 * interleaved mid-line. Line-buffer stdout so both land in order. */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	if (argc < 2) {
 		PrintUsage();
 		return 0;
@@ -1224,6 +1322,14 @@ int main(int argc, const char *argv[]) {
 	RequestLogIn(&client);
 	
 	RequestClientInitOver(&client);
+	
+	/* This server pushes neither 2001 BUILDINGINFO nor 1008 ROLEINFO
+	 * during login, so both must be requested explicitly:
+	 *   - without ROLEINFO the player has no zone/name/troops, which
+	 *     silently disabled map scan, gather, hunt and training
+	 *   - without BUILDINGINFO no upgrade is ever attempted */
+	RequestRoleInfo(&client);
+	RequestAllBuildData(&client);
 	
 	// Handle 
 	ProcessConnection(&client);

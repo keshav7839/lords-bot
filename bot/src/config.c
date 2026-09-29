@@ -213,6 +213,11 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "alliance.request_own_help") == 0) {
+		c->alliance.request_own_help = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
 	if (strcmp(key, "protection.enabled") == 0) {
 		c->protection.enabled = (strcmp(value, "true") == 0);
 		return true;
@@ -546,6 +551,11 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.tycoon") == 0) {
+		c->wave.tycoon = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
 	if (strcmp(key, "wave.labyrinth_mode") == 0) {
 		c->wave.labyrinth_mode = (uint8_t)strtoul(value, NULL, 0);
 		if (c->wave.labyrinth_mode > 1)
@@ -589,6 +599,30 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 	
 	if (strcmp(key, "wave.gather_max_dist") == 0) {
 		c->wave.gather_max_dist = (uint16_t)strtoul(value, NULL, 10);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_priority") == 0) {
+		/* amount | mixed | distance (or 0 | 1 | 2). */
+		if (strcmp(value, "amount") == 0 || strcmp(value, "0") == 0)
+			c->wave.gather_priority = 0;
+		else if (strcmp(value, "distance") == 0 ||
+		         strcmp(value, "2") == 0)
+			c->wave.gather_priority = 2;
+		else
+			c->wave.gather_priority = 1;
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_fit") == 0) {
+		c->wave.gather_fit = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_load") == 0) {
+		c->wave.gather_load = (uint32_t)strtoul(value, NULL, 10);
+		if (c->wave.gather_load == 0)
+			c->wave.gather_load = 10;
 		return true;
 	}
 	

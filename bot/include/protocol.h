@@ -12,11 +12,15 @@ void RequestHeartBeat(Connection *conn);
 void RequestTroopTraining(Connection *c, uint8_t kind, uint8_t tier, uint32_t amount);
 void RequestFinishTraining(Connection *c);
 void RequestHealTroops(Connection *c, uint8_t style);
-void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point);
+/* troops16: optional 16xu32 kind-major T1..T4 override (fit-to-tile);
+ * NULL sends the full home army. */
+void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point,
+                        const uint32_t *troops16);
 void RequestHuntMarch(Connection *c, uint16_t zone, uint8_t point,
                       uint8_t attack_times);
 
 void RequestTroopRecall(Connection *c, uint8_t Index);
+void RequestRequestOwnHelp(Connection *c);
 void RequestViewChat(Connection *c, uint8_t channel, uint8_t prev, int8_t kind, int64_t DataID, int64_t DataTime);
 
 void RequestSendChat(Connection *c, uint8_t channel, const char *message);
@@ -107,7 +111,9 @@ void ShieldTick(Connection *c);
 void AllianceGiftTick(Connection*);
 void RecvAllianceInfo(Connection*, const uint8_t*);
 
-void RecvBuildingQueue(Connection*, const uint8_t*);
+void RecvBuildingQueue(Connection*, const uint8_t*, uint16_t);
+void RequestAllBuildData(Connection *c);
+void RequestRoleInfo(Connection *c);
 
 void RecvUpdateWatchTowerAddLineInfo(Connection*, const uint8_t*);
 void RecvWatchTowerLineDetail(Connection *c, const uint8_t *data);

@@ -37,8 +37,12 @@ void SuperUserAccess(Connection *c,
                      const char *new_admin)
 {
 	
-	/*
-    // Only current admin may change admin 
+	/* SECURITY: this guard was commented out, so ANY player could
+	 * mail "$su <their own name>" and become admin — which also
+	 * unlocked $probe (raw packet injection), $upgrade, $research and
+	 * $claim. Only the currently-configured admin may hand over admin,
+	 * and only to a different account (no self-promotion, no locking
+	 * yourself out). */
     if (strcmp(player_name, c->bot.admin_name) != 0)
     {
         RequestSendMail(
@@ -49,7 +53,17 @@ void SuperUserAccess(Connection *c,
         );
         return;
     }
-    */
+
+    if (strcmp(player_name, new_admin) == 0)
+    {
+        RequestSendMail(
+            c,
+            player_name,
+            "No change",
+            "You are already the administrator."
+        );
+        return;
+    }
 
     snprintf(c->bot.admin_name,
              sizeof(c->bot.admin_name),
@@ -72,18 +86,30 @@ void command_handler(Connection *c, const char *player_name, const char *message
 	
 	message++; // skip prefix 
 	
+	/* SECURITY: the resource-send commands used to run unauthenticated
+	 * (their guard was commented out), so any player who could mail the
+	 * bot could spend the account's resources. Mirror the $probe guard. */
+	#define CMD_REQUIRE_ADMIN()                                              \
+		do {                                                               \
+			if (strcmp(player_name, c->bot.admin_name) != 0) {           \
+				RequestSendMail(c, player_name, "Unauthorized",       \
+				                "Administrator only.");              \
+				return;                                                 \
+			}                                                              \
+		} while (0)
+	
 	// handle food command 
 	if (memcmp(message, "food", 4) == 0 && (message[4] == '\0' || message[4] == ' '))
 	{
-		// if (c->bank.enabled || strcmp(c->bot.admin_name, player_name) == 0) {
-			ResourceCommandHandler(c, player_name, message + 4, RESOURCE_FOOD, "food");
-		// }
+		CMD_REQUIRE_ADMIN();
+		ResourceCommandHandler(c, player_name, message + 4, RESOURCE_FOOD, "food");
 		return;
 	}
 	
 	// handle stone command
 	if (memcmp(message, "stone", 5) == 0 && (message[5] == '\0' || message[5] == ' '))
 	{
+		CMD_REQUIRE_ADMIN();
 		ResourceCommandHandler(c, player_name, message + 5, RESOURCE_ROCK, "stone");
 		return;
 	}
@@ -91,6 +117,7 @@ void command_handler(Connection *c, const char *player_name, const char *message
 	// handle wood command
 	if (memcmp(message, "wood", 4) == 0 && (message[4] == '\0' || message[4] == ' '))
 	{
+		CMD_REQUIRE_ADMIN();
 		ResourceCommandHandler(c, player_name, message + 4, RESOURCE_WOOD, "wood");
 		return;
 	}
@@ -98,6 +125,7 @@ void command_handler(Connection *c, const char *player_name, const char *message
 	// handle ore command
 	if (memcmp(message, "ore", 3) == 0 && (message[3] == '\0' || message[3] == ' '))
 	{
+		CMD_REQUIRE_ADMIN();
 		ResourceCommandHandler(c, player_name, message + 3, RESOURCE_ORE, "ore");
 		return;
 	}
@@ -105,6 +133,7 @@ void command_handler(Connection *c, const char *player_name, const char *message
 	// handle gold command
 	if (memcmp(message, "gold", 4) == 0 && (message[4] == '\0' || message[4] == ' '))
 	{
+		CMD_REQUIRE_ADMIN();
 		ResourceCommandHandler(c, player_name, message + 4, RESOURCE_GOLD, "gold");
 		return;
 	}
@@ -168,6 +197,8 @@ void command_handler(Connection *c, const char *player_name, const char *message
 	if (memcmp(message, "waves", 5) == 0 &&
 	    (message[5] == '\0' || message[5] == ' '))
 	{
+		/* SECURITY: comment said "admin only" but there was no check. */
+		CMD_REQUIRE_ADMIN();
 		WaveStatusMail(c, player_name);
 		return;
 	}
