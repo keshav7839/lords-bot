@@ -2351,7 +2351,12 @@ void RequestRoleInfo(Connection *c)
 	c->size += 4;
 
 	write_u16(c->data, c->size);
-	send_packet(c, false);
+	/* Login-stage packet: must be encrypted like the other handshake
+	 * sends. Sending it in the clear (send_packet(c, false)) made the
+	 * server drop the session about two minutes later — verified by
+	 * bisection: with 1004 encrypted the run stays up, with it in the
+	 * clear the connection closes. */
+	send_packet(c, true);
 	LOGI("[LOGIN] requested role info (1004 -> 1008)\n");
 }
 

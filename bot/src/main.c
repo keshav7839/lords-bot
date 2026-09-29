@@ -60,6 +60,60 @@ void BotTick(Connection *c)
 {
 	if (c->server_time == 0) return;
 	
+	/* Deferred post-login data requests.
+	 *
+	 * This server never pushes 2001 BUILDINGINFO or 1008 ROLEINFO, and
+	 * sending those requests inside the login handshake made the server
+	 * close the session a couple of minutes in. Ask for them from here
+	 * instead, a few seconds after the init burst, and only once each. */
+	if (c->init_deferred && c->login_complete) {
+		static time_t s_init_at = 0;
+		if (s_init_at == 0)
+			s_init_at = time(NULL);
+		else if ((time(NULL) - s_init_at) >= 5) {
+			s_init_at = time(NULL);
+			c->init_deferred = false;
+			if (!c->roleinfo_requested) {
+				c->roleinfo_requested = true;
+				/* 1004 is a pre-authentication opcode. It does
+				 * return ROLEINFO (zone/name/troops) and nothing
+				 * else does on this server, but the server
+				 * drops the session ~2 min later when it is
+				 * sent post-login, encrypted or not. Verified by
+				 * bisection: build without this request runs
+				 * 60+ min clean.
+				 * Kept behind a config flag so the trade-off is
+				 * explicit rather than silently fatal. */
+				if (c->wave.request_role_info)
+					RequestRoleInfo(c);
+				else
+					LOGW("[LOGIN] ROLEINFO not requested "
+					     "(wave.request_role_info=false) — map "
+					     "scan/gather stay blocked until the "
+					     "server accepts 1004 post-login\n");
+			}
+			if (!c->buildinfo_requested) {
+				c->buildinfo_requested = true;
+				/* Opcode 2000 is a guess (2001 is the response,
+				 * 2000 is the request half, and it is absent
+				 * from packet_map.h). Verified by bisection:
+				 * sending it makes the server close the
+				 * session within ~2 minutes, while the same
+				 * build without it runs 60+ min clean. OFF by
+				 * default; the building queue therefore stays
+				 * idle until a real-client capture gives us
+				 * the true request shape. */
+				if (c->wave.request_build_info)
+					RequestAllBuildData(c);
+				else
+					LOGW("[BUILD] building list not requested "
+					     "(wave.request_build_info=false) — "
+					     "no upgrades until the request shape "
+					     "is confirmed\n");
+			}
+		}
+	}
+	
 	// Web command injection (control from web dashboard)
 	{
 		FILE *wf = fopen("data/webcmd.txt", "r");
@@ -247,6 +301,12 @@ void ProcessConnection(Connection *c)
 				case _MSG_GAMESERVER_LOGINLOG: 
 					// kind = read_u16(s->buffer + s->parse_pos + 4);
 					LOGI("Game login successful\n");
+					/* Defer the ROLEINFO / BUILDINGINFO requests
+					 * until the init burst has been consumed.
+					 * Sending them mid-handshake made the server
+					 * close the session. */
+					c->login_complete = true;
+					c->init_deferred = true;
 					// ServerInitOver(c);
 					break;
 				case _MSG_LOGIN_LOGINERRORRESP: 
@@ -1327,9 +1387,14 @@ int main(int argc, const char *argv[]) {
 	 * during login, so both must be requested explicitly:
 	 *   - without ROLEINFO the player has no zone/name/troops, which
 	 *     silently disabled map scan, gather, hunt and training
-	 *   - without BUILDINGINFO no upgrade is ever attempted */
-	RequestRoleInfo(&client);
-	RequestAllBuildData(&client);
+	 *   - without BUILDINGINFO no upgrade is ever attempted
+	 *
+	 * They are NOT sent here. Firing them inside the handshake made the
+	 * server close the session ~2.5 minutes in (a 60-minute run on the
+	 * previous build stayed up the whole time), so they go out from the
+	 * tick loop once the login burst has settled instead — see
+	 * BotTick's deferred-init block. */
+
 	
 	// Handle 
 	ProcessConnection(&client);

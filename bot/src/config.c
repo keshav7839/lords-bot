@@ -551,6 +551,16 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.request_build_info") == 0) {
+		c->wave.request_build_info = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.request_role_info") == 0) {
+		c->wave.request_role_info = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
 	if (strcmp(key, "wave.tycoon") == 0) {
 		c->wave.tycoon = (strcmp(value, "true") == 0);
 		return true;

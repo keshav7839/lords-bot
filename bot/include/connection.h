@@ -755,6 +755,8 @@ typedef struct {
 	uint8_t  labyrinth_mode;             /* 0 Turbo (elite), 1 Normal. */
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
 	bool     tycoon;                     /* Kingdom Tycoon free daily roll. */
+	bool     request_role_info;           /* Send 1004 for ROLEINFO (drops session). */
+	bool     request_build_info;          /* Send 2000 for BUILDINGINFO (drops session). */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */
 
 	/* --- Wave F: hospital auto-heal (HEALINGTROOP 2426). */
@@ -1059,6 +1061,14 @@ typedef struct {
 	ResourceTransfer transfer;
 	
 	AllianceMemberList alliance_member;
+	
+	/* Set once the server confirms the game login. ROLEINFO and
+	 * BUILDINGINFO are requested afterwards (not during the
+	 * handshake) — see BotTick. */
+	bool login_complete;
+	bool init_deferred;
+	bool roleinfo_requested;
+	bool buildinfo_requested;
 } Connection;
 
 /* API */

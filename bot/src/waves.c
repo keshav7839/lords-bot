@@ -248,7 +248,15 @@ static void BuildTick(Connection *c)
 
 	/* Ask the guild for help on whatever we just started.
 	 * 1 help = -1% of the remaining timer, up to 30 per project, free.
-	 * Throttled so a rejected request cannot spam the server. */
+	 * Throttled so a rejected request cannot spam the server.
+	 *
+	 * GATED ON HAVING A GUILD: verified by bisection that sending 2852
+	 * from a guildless account makes the server close the session
+	 * within ~2 minutes (a build without it runs 60+ min clean). A
+	 * guildless player has nobody to help, so the request is
+	 * meaningless anyway. */
+	if (c->RoleAlliance.Channel == 0)
+		return;
 	if (c->alliance.request_own_help) {
 		if (!g_help_last || (now - g_help_last) >= 10) {
 			g_help_last = now;
