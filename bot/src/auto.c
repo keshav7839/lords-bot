@@ -19,6 +19,17 @@ static time_t g_speedup_day = 0;
 static uint16_t g_speedup_used = 0;
 static int64_t g_speedup_skip_log = -1;
 
+static const char *TroopKindName(uint8_t kind)
+{
+	switch (kind) {
+		case 0: return "infantry";
+		case 1: return "ranged";
+		case 2: return "cavalry";
+		case 3: return "siege";
+		default: return "?";
+	}
+}
+
 void TrainingTick(Connection *c)
 {
 	if (!c->train.enabled)
@@ -60,12 +71,67 @@ void TrainingTick(Connection *c)
 
 	g_train_last = now;
 
-	uint32_t amount = c->train.amount ? c->train.amount : 1000;
+	/* Kind selection.
+	 *
+	 * Training one fixed kind forever produces a mono-army that any
+	 * player reads instantly and counters for free (inf -> ranged ->
+	 * cav -> inf). The reference bot's "Rotate Troops" cycles a chosen
+	 * order instead. With no rotation configured we keep the single
+	 * configured kind, so existing configs are unchanged. */
+	uint8_t kind = c->train.kind;
+	if (c->train.rotate_count > 0)
+		kind = c->train.rotate_kind[c->train.rotate_cursor %
+		                            c->train.rotate_count];
 
-	RequestTroopTraining(c, c->train.kind, c->train.tier, amount);
-	LOGI("[TRAIN] auto-train kind=%u tier=%u amount=%u (interval~%us)\n",
-	     (unsigned)c->train.kind, (unsigned)c->train.tier,
-	     amount, interval);
+	/* Target totals.
+	 *
+	 * The configured amount is a *total including already-trained*
+	 * troops, not a per-batch increment, so a partially-trained army
+	 * gets topped up instead of over-trained. This is also what keeps
+	 * the barracks within its capacity and stops the surplus becoming
+	 * dead troops on the first real hit. */
+	uint32_t target = c->train.target_total[kind]
+	                  ? c->train.target_total[kind]
+	                  : c->train.amount;
+	if (target == 0)
+		target = 1000;
+
+	uint64_t have = 0;
+	for (uint8_t t = 0; t < 4; t++)
+		have += c->troop.kinds[kind][t];
+
+	if (have >= target) {
+		/* This kind is satisfied — move to the next one in the
+		 * rotation rather than queueing a pointless batch. */
+		if (c->train.rotate_count > 0) {
+			c->train.rotate_cursor =
+				(uint8_t)((c->train.rotate_cursor + 1) %
+				          c->train.rotate_count);
+			g_train_last = 0;   /* re-evaluate on the next pass */
+			LOGI("[TRAIN] %s at target (%llu/%u) — rotating\n",
+			     TroopKindName(kind), (unsigned long long)have,
+			     target);
+		}
+		return;
+	}
+
+	uint32_t amount = (uint32_t)(target - have);
+	if (amount > c->train.max_batch && c->train.max_batch)
+		amount = c->train.max_batch;
+	if (amount == 0)
+		return;
+
+	RequestTroopTraining(c, kind, c->train.tier, amount);
+	LOGI("[TRAIN] auto-train kind=%u (%s) tier=%u amount=%u "
+	     "(have %llu / target %u, interval~%us)\n",
+	     kind, TroopKindName(kind), (unsigned)c->train.tier,
+	     amount, (unsigned long long)have, target, interval);
+
+	/* Advance the rotation on a confirmed start so the next batch
+	 * trains a different type. */
+	if (c->train.rotate_count > 0)
+		c->train.rotate_cursor = (uint8_t)((c->train.rotate_cursor + 1) %
+		                                   c->train.rotate_count);
 }
 
 void SpeedupTick(Connection *c)

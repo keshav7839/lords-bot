@@ -396,8 +396,13 @@ void RequestHealTroops(Connection *c, uint8_t style)
  *   seq + 5xu16 hero ids + 16xu32 troops + u16 zone + u8 point
  * Troops follow pLeftTroopForce[kind][tier]: kind-major (inf, rng,
  * cav, seg), tier ascending (T1 first) — matches the 2401 receive
- * convention documented in connection.h. Heroes default to 0
- * (gathering does not require them).
+ * convention documented in connection.h.
+ *
+ * Marches carry a 5-slot u16 hero-id array. A hero only grants its
+ * passive army boosts and troop Command capacity while it is *deployed*,
+ * so sending all zeros (which this used to do for gathering) forfeits
+ * every bonus for free. Selection is per-role so the same cavalry hero
+ * is not sent to smash a wall.
  */
 void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point,
                         const uint32_t *troops16)
@@ -416,7 +421,11 @@ void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point,
 	write_u32(c->data + c->size, ++c->protocol.seq_id); c->size += 4;
 
 	for (int h = 0; h < 5; h++) {           /* hero ids */
-		write_u16(c->data + c->size, 0); c->size += 2;
+		uint16_t hero = c->wave.gather_hero[h];
+		if (hero == 0 && h < (int)(c->hero_count > 5 ? 5
+		                                           : c->hero_count))
+			hero = c->hero_id[h];
+		write_u16(c->data + c->size, hero); c->size += 2;
 	}
 	for (int k = 0; k < 4; k++)             /* 16 troop counts */
 		for (int t = 0; t < tiers; t++) {
@@ -1511,6 +1520,53 @@ uint16_t RoleAttrLevelUp(const uint8_t *data, int UpdateFlag) {
 	}
 	
 	return offset;
+}
+
+/* ------------------------------------------------------------------ */
+/* Scouting (2448 SENDSCOUT)                                            */
+/*                                                                      */
+/* Payload CONFIRMED against the decompiled client                      */
+/* (DataManager.cs: SendScout):                                          */
+/*     seq | u16 zoneID | u8 pointID        (unencrypted)               */
+/*                                                                      */
+/* This is the single highest-value packet the bot is missing. It is    */
+/* how you read: wall HP, trap tiers, the defender roster, whether the  */
+/* target is shielded, and Battle Fury — and how a Darknest's Dark      */
+/* Essence level is learned, which is the correct difficulty signal for  */
+/* rally joining (nest level is a poor proxy: an L2 nest rolls essence   */
+/* 3-6 and an L3 rolls 6-10).                                          */
+/* ------------------------------------------------------------------ */
+
+void RequestSendScout(Connection *c, uint16_t zone, uint8_t point)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_SENDSCOUT);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u16(c->data + c->size, zone);  c->size += 2;
+	write_u8 (c->data + c->size, point); c->size += 1;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
+/* Scout results arrive as a chain: SENDSCOUT -> SCOUTRETURN ->
+ * SCOUTREPORTINFO -> REPORTINFOEND. Store what we understand and log
+ * the rest, so a real capture can extend the parse. */
+void RecvScoutReport(Connection *c, const uint8_t *data, uint16_t size)
+{
+	WaveRecvDump(c, "SCOUT_REPORT", data, size);
+
+	if (size < 2)
+		return;
+
+	/* The report body is not yet mapped; the first byte pair is a
+	 * record id in the client's own stream. Until the layout is
+	 * confirmed we deliberately do not act on it. */
+	LOGI("[SCOUT] report received (%uB) — layout not yet mapped, "
+	     "logged for reverse engineering\n", size);
 }
 
 void RecvLoginRoleInfo(Connection *c, const uint8_t *data, uint16_t size) 
@@ -3373,6 +3429,10 @@ void RecvArmyGroupInfo(Connection *c, const uint8_t *data, uint16_t size) {
 			} else {
 				base[k][t] = 0;
 			}
+			/* kinds[] is the kind-major view the training
+			 * scheduler reads; keep it authoritative here so the
+			 * per-kind arrays can never drift from it. */
+			c->troop.kinds[k][t] = base[k][t];
 			c->troop.total += base[k][t];
 		}
 

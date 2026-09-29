@@ -681,6 +681,15 @@ void ProcessConnection(Connection *c)
 						s->buffer + s->parse_pos + 4,
 						s->packet_size - 4);
 					break;
+				case _MSG_RESP_SCOUTREPORTINFO:
+					RecvScoutReport(c, s->buffer + s->parse_pos + 4,
+					                s->packet_size - 4);
+					break;
+				case _MSG_RESP_ARENA_GET_PRIZE:
+					WaveRecvArenaPrize(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
 				case _MSG_RESP_SENDSCOUT:
 					WaveRecvDump(c, "SENDSCOUT_RESP",
 						s->buffer + s->parse_pos + 4, s->packet_size - 4);

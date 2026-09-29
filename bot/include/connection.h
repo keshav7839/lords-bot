@@ -546,6 +546,10 @@ typedef struct {
 	uint32_t cavalry[TROOP_MAX_TIERS];
 	uint32_t ranged[TROOP_MAX_TIERS];
 	uint32_t siege[TROOP_MAX_TIERS];
+	/* Kind-major view (0 inf, 1 ranged, 2 cav, 3 siege) for generic
+	 * per-kind maths. Kept in sync by the same accessor the roster
+	 * parser uses; see TroopKindCount(). */
+	uint32_t kinds[4][TROOP_MAX_TIERS];
 } TroopData;
 
 typedef struct {
@@ -692,6 +696,17 @@ typedef struct {
 	uint8_t  tier;       /* 0 = T1 ... 4 = T5 */
 	uint32_t amount;
 	uint16_t interval_s;
+	/* Per-kind target TOTALS including already-trained troops (0 = fall
+	 * back to `amount`). The reference bot treats the amount as a
+	 * total, not a per-batch delta, so a half-trained army is topped
+	 * up instead of over-trained. */
+	uint32_t target_total[4];
+	uint32_t max_batch;          /* per-request cap, 0 = uncapped */
+	/* Rotation. Training one kind forever yields a mono-army that is
+	 * countered for free (inf -> ranged -> cav -> inf). */
+	uint8_t  rotate_kind[4];
+	uint8_t  rotate_count;
+	uint8_t  rotate_cursor;
 	/* Accepted queue awaiting ADDSOLDIER (bot-local accounting until
 	 * the server pushes an ARMYGROUP update). */
 	uint8_t  pending_kind;
@@ -729,12 +744,18 @@ typedef struct {
 	uint16_t research_priority[WAVE_PRIORITY_MAX]; /* tech_id order. */
 	uint8_t  research_priority_count;
 
+	bool     shelter_always;             /* Keep sheltering, re-arming it. */
 	bool     shelter_on_attack;          /* Hide troops in shelter on attack. */
 	bool     shelter_on_scout;
 
 	bool     quest_claim;                /* Claim finished quests. */
 	bool     vip_collect;                /* Collect VIP chest. */
-	bool     arena_challenge;            /* Fight arena on cooldown. */
+	/* Hero ids for gather marches (0 = use the roster in save order). */
+	uint16_t gather_hero[5];
+	bool     arena_challenge;
+	/* Offense squad for colosseum challenges (the defense roster is a
+	 * separate formation; 0 = fall back to it). */
+	uint16_t arena_offense_hero[5];            /* Fight arena on cooldown. */
 
 	/* --- Wave C --- */
 	bool     gather_auto;                /* March to resource tiles. */
@@ -772,6 +793,8 @@ typedef struct {
 	uint8_t  hunt_min_level;             /* Only hunt monsters at/above. */
 
 	/* --- Gather tile priority + army fit + recall-on-attack. */
+	/* Lowest-stock target used by gather_priority = 3. */
+	uint32_t gather_stock_target;
 	uint8_t  gather_priority;            /* 0 amount, 1 mixed (amount/dist),
 	                                      *    2 nearest. */
 	bool     gather_fit;                 /* Size the march to the tile
@@ -1061,6 +1084,15 @@ typedef struct {
 	ResourceTransfer transfer;
 	
 	AllianceMemberList alliance_member;
+	
+	/* Current shelter window, from 5601 SHELTER_DATA
+	 * (u16 lord | i64 begin | u32 require | u16 mask). Tracked so the
+	 * window can be renewed before it lapses — a 12h shelter that
+	 * expires leaves the leader exposed with no troops home, which is
+	 * the single largest permanent-loss risk in the protection set. */
+	int64_t  shelter_begin;
+	uint32_t shelter_require;
+	uint16_t shelter_mask;
 	
 	/* Set once the server confirms the game login. ROLEINFO and
 	 * BUILDINGINFO are requested afterwards (not during the

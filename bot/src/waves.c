@@ -583,6 +583,10 @@ void WaveRecvShelterData(Connection *c, const uint8_t *data, uint16_t size)
 	uint32_t req    = read_u32(data + 10);
 	uint16_t mask   = read_u16(data + 14);
 
+	c->shelter_begin    = begin;
+	c->shelter_require  = req;
+	c->shelter_mask     = mask;
+
 	int n = 0;
 	for (int i = 0; i < 20; i++)
 		if (mask & (1u << i))
@@ -1029,6 +1033,74 @@ void WaveRecvArenaChallenge(Connection *c, const uint8_t *data, uint16_t size)
 	(void)c;
 }
 
+static time_t g_arena_prize_last = 0;
+
+void WaveRecvArenaPrize(Connection *c, const uint8_t *data, uint16_t size)
+{
+	/* ArenaManager.RecvArena_Arena_GetPrize: u8 err | u32 newDiamond
+	 * (only when err == 0). */
+	if (size < 1)
+		return;
+	if (data[0] != 0) {
+		LOGI("[ARENA] prize claim rejected (err=%u)\n", data[0]);
+		return;
+	}
+	if (size >= 5) {
+		uint32_t total = read_u32(data + 1);
+		LOGI("[ARENA] gem prize claimed — diamond balance now %u\n",
+		     total);
+		c->player.gems = total;
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Shelter upkeep                                                       */
+/*                                                                      */
+/* CONFIRMED against the decompiled client:                            */
+/*   RELEASESHELTERTROOP req: seq, empty payload, unencrypted          */
+/*     (HideArmyManager.SendReleaseShelterTroop)                        */
+/*   RecvShelterData: u16 lordId | ... (begin/require time)            */
+/*                                                                      */
+/* The reference bot keeps shelter on a ~2h re-shelter cycle and        */
+/* releases after an attacker finishes. Without that, a 12h shelter     */
+/* simply expires and the leader is exposed with no troops home — the   */
+/* single largest permanent-loss risk in the protection set.            */
+/* ------------------------------------------------------------------ */
+
+static void ShelterTick(Connection *c)
+{
+	if (!c->wave.shelter_always)
+		return;
+	if (c->server_time == 0)
+		return;
+
+	time_t now = time(NULL);
+	if (g_shelter_last && (now - g_shelter_last) < 300)
+		return;
+	g_shelter_last = now;
+
+	/* Only act once we actually know the shelter window. */
+	if (c->shelter_require == 0 || c->shelter_begin == 0)
+		return;
+
+	int64_t end = c->shelter_begin + (int64_t)c->shelter_require;
+	int64_t remaining = end - (int64_t)c->server_time;
+	if (remaining <= 0) {
+		LOGI("[SHELTER] expired — leader exposed\n");
+		return;
+	}
+
+	/* Re-shelter while there is still plenty of time left, so the
+	 * window never lapses. */
+	if (remaining < (int64_t)(2 * 3600)) {
+		/* shelter_on_attack doubles as the "sheltering is allowed"
+		 * switch; the tick reuses the same request path. */
+		WaveShelterRequest(c, true);
+		LOGI("[SHELTER] renewing, %llds left on the current window\n",
+		     (long long)remaining);
+	}
+}
+
 static void ArenaTick(Connection *c)
 {
 	if (!c->wave.arena_challenge)
@@ -1037,6 +1109,19 @@ static void ArenaTick(Connection *c)
 		return;
 
 	time_t now = time(NULL);
+
+	/* --- gem prize ----------------------------------------------------
+	 * The Colosseum pays gems by rank every 3 hours and the claim is
+	 * free; 5214 is a confirmed empty payload. The reference bot calls
+	 * this "Collect Arena Gems" and it is the entire free-gem value of
+	 * the feature — the challenges themselves pay almost nothing.
+	 * Polled on the game's own 3h cadence. */
+	if (g_arena_prize_last == 0 ||
+	    (now - g_arena_prize_last) >= 3 * 3600) {
+		g_arena_prize_last = now;
+		SendRaw(c, _MSG_REQUEST_ARENA_GET_PRIZE, NULL, 0);
+		LOGI("[ARENA] gem prize claim requested (5214, free, 3h)\n");
+	}
 
 	if (!g_arena.have_target) {
 		if (g_arena_refresh_last &&
@@ -1060,12 +1145,20 @@ static void ArenaTick(Connection *c)
 	write_u32(payload + pos, g_arena.t_place);   pos += 4;
 	memcpy(payload + pos, g_arena.t_name, 13);   pos += 13;
 	for (int i = 0; i < 5; i++) {
-		write_u16(payload + pos, g_arena.def_hero[i]);
+		/* Offense squad. The game keeps offense and defense as
+		 * separate formations; reusing the defense roster for the
+		 * attack was a real correctness bug (the defense array is
+		 * what other players fight). Falls back to the roster we
+		 * have if no explicit offense set is configured. */
+		uint16_t hero = c->wave.arena_offense_hero[i];
+		if (hero == 0)
+			hero = g_arena.def_hero[i];
+		write_u16(payload + pos, hero);
 		pos += 2;
 	}
 	SendRaw(c, _MSG_REQUEST_ARENA_CHALLENGE, payload, pos);
-	LOGI("[ARENA] challenging rank %u (28-byte game payload, heroes from "
-	     "defense squad)\n", g_arena.t_place);
+	LOGI("[ARENA] challenging rank %u (28-byte game payload, offense "
+	     "squad)\n", g_arena.t_place);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1128,17 +1221,68 @@ static void RewardTick(Connection *c)
 }
 
 /* ------------------------------------------------------------------ */
-/* Wave D: traps (learning mode)                                       */
+/* Wave D: traps                                                        */
+/*                                                                      */
+/* Layout confirmed against the decompiled client:                     */
+/*   TRAPINFO (2602) resp: 12 x u32 quantity = 3 trap types x 4 tiers */
+/*     (DataManager.cs: RecvTrapInfo). Index = type*4 + tier.          */
+/*   TRAPCONSTEVENT (2604) resp: u8 kind | u8 rank | u32 qty |        */
+/*     i64 begin | u32 need — the trap manufacturing queue.             */
+/*   CONSTRUCT req (2605): u8 kind | u8 rank | u32 count               */
+/*   REPAIR    req (2616): u8 kind | u8 rank | u32 count               */
+/*                                                                      */
+/* Traps stop working entirely once the wall hits 0 HP, and the wall   */
+/* raises the per-type cap with its level, so the target is always     */
+/* "fill the wall's cap".                                              */
 /* ------------------------------------------------------------------ */
 
 static time_t g_trap_last = 0;
 
-void WaveRecvTrapInfo(Connection *c, const uint8_t *data, uint16_t size)
+/* 3 types x 4 tiers, from TRAPINFO. */
+static uint32_t g_trap_qty[12];
+static bool     g_trap_loaded = false;
+
+/* Wall trap capacity by wall level (index 1..25). Derived from the
+ * wiki's progression (100 at L1 growing to 125,000 at L25); the bot
+ * only needs it to decide whether more traps are worth queuing, so an
+ * approximation that is deliberately conservative is fine. */
+static uint32_t WallTrapCapacity(uint8_t wall_level)
 {
-	(void)c;
-	HexPreview("TRAPINFO", data, size, 48);
+	if (wall_level == 0)
+		return 0;
+	/* Roughly geometric, anchored on the published endpoints. */
+	uint64_t cap = 100;
+	for (uint8_t i = 1; i < wall_level; i++)
+		cap = cap * 135 / 100;
+	return (uint32_t)(cap > 125000u ? 125000u : cap);
 }
 
+void WaveRecvTrapInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	/* 12 x u32 confirmed by the decompiled RecvTrapInfo. */
+	if (size < 48) {
+		LOGI("[TRAP] info too short (%uB, want >=48)\n", size);
+		return;
+	}
+	uint16_t offset = 0;
+	uint32_t total = 0;
+	for (int i = 0; i < 12; i++) {
+		g_trap_qty[i] = read_u32(data + offset); offset += 4;
+		total += g_trap_qty[i];
+	}
+	if (!g_trap_loaded) {
+		g_trap_loaded = true;
+		LOGI("[TRAP] inventory: T%d %u/%u/%u/%u  T%d %u/%u/%u/%u  "
+		     "T%d %u/%u/%u/%u  (total %u)\n",
+		     1, g_trap_qty[0], g_trap_qty[1], g_trap_qty[2], g_trap_qty[3],
+		     2, g_trap_qty[4], g_trap_qty[5], g_trap_qty[6], g_trap_qty[7],
+		     3, g_trap_qty[8], g_trap_qty[9], g_trap_qty[10], g_trap_qty[11],
+		     total);
+	}
+}
+
+/* Traps are useless at 0 wall HP and are wasted if the wall is already
+ * at capacity, so both are checked before queueing more. */
 static void TrapTick(Connection *c)
 {
 	if (!c->wave.trap_build)
@@ -1151,16 +1295,86 @@ static void TrapTick(Connection *c)
 		return;
 	g_trap_last = now;
 
+	if (!g_trap_loaded) {
+		/* 2602 TRAPINFO is pushed by the server at login (verified:
+		 * 48 bytes = 12 x u32, matching the decompiled RecvTrapInfo),
+		 * so there is no request to make. Nothing to do until it
+		 * arrives. */
+		LOGI("[TRAP] waiting for TRAPINFO (2602) from the server\n");
+		return;
+	}
+
+	/* Find the wall to know the cap. */
+	uint8_t wall_level = 0;
+	for (uint16_t i = 0; i < c->building_count; i++) {
+		if (c->building[i].build_id == BUILD_WALL) {
+			wall_level = c->building[i].level;
+			break;
+		}
+	}
+	if (wall_level == 0) {
+		LOGI("[TRAP] no wall found among %u buildings, skipping\n",
+		     c->building_count);
+		return;
+	}
+
+	uint32_t built = 0;
+	for (int i = 0; i < 12; i++)
+		built += g_trap_qty[i];
+	uint32_t cap = WallTrapCapacity(wall_level);
+
+	if (built >= cap) {
+		LOGI("[TRAP] at capacity: %u/%u (wall lv%u) — nothing to do\n",
+		     built, cap, wall_level);
+		return;
+	}
+
+	/* Fill the cheapest tier of a type that is furthest below an even
+	 * split. Equalising keeps the wall effective against all three
+	 * troop types instead of stacking one. */
+	uint32_t target = cap / 3u;
+	uint8_t  best_type = 0, best_rank = 0;
+	uint32_t best_deficit = 0;
+	for (uint8_t type = 0; type < 3; type++) {
+		uint32_t have = 0;
+		for (uint8_t rank = 0; rank < 4; rank++)
+			have += g_trap_qty[type * 4 + rank];
+		uint32_t deficit = (have < target) ? (target - have) : 0;
+		if (deficit > best_deficit) {
+			/* prefer the lowest rank within the type */
+			for (uint8_t rank = 0; rank < 4; rank++) {
+				if (g_trap_qty[type * 4 + rank] <
+				    g_trap_qty[type * 4 + best_rank]) {
+					best_rank = rank;
+				}
+			}
+			best_deficit = deficit;
+			best_type = type;
+		}
+	}
+	if (best_deficit == 0) {
+		LOGI("[TRAP] all types near target (%u/%u), skipping\n",
+		     built, cap);
+		return;
+	}
+
+	/* Queue a sensible batch rather than one at a time. */
+	uint32_t want = 1000;
+	if (want > best_deficit)
+		want = best_deficit;
+	if (want == 0)
+		return;
+
 	/* Game payload (UIBarrack_Soldier.SendTrapConstruct):
-	 *   u8 (RD_Kind - 4) | u8 (RD_Rank - 1) | u32 count
-	 * kind 0..11 = trap types, rank 0..3 = tiers.  Small count so a
-	 * resource miss only rejects harmlessly; response = 2606. */
+	 *   u8 (RD_Kind - 4) | u8 (RD_Rank - 1) | u32 count */
 	uint8_t payload[6];
-	payload[0] = 0;                       /* trap type 0 */
-	payload[1] = 0;                       /* rank T1 */
-	write_u32(payload + 2, 1);            /* quantity */
+	payload[0] = best_type;
+	payload[1] = best_rank;
+	write_u32(payload + 2, want);
 	SendRaw(c, _MSG_REQUEST_TRAPCONSTRUCT, payload, 6);
-	LOGI("[TRAP] construct kind=0 rank=0 count=1 (game payload, resp 2606)\n");
+	LOGI("[TRAP] construct type=%u tier=%u count=%u (have %u/cap %u, "
+	     "wall lv%u, resp 2606)\n",
+	     best_type, best_rank + 1, want, built, cap, wall_level);
 }
 
 void WaveRecvTrapConstruct(Connection *c, const uint8_t *data, uint16_t size)
@@ -1465,10 +1679,15 @@ void WaveRecvMarchNotAtk(Connection *c, const uint8_t *data, uint16_t size)
 static void CreditSoldiers(Connection *c, uint8_t kind, uint8_t rank,
                            uint32_t qty, const char *why)
 {
-	uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
-	                     c->troop.cavalry, c->troop.siege };
-	if (kind < 4 && rank < TROOP_MAX_TIERS)
-		arr[kind][rank] += qty;
+	if (kind < 4 && rank < TROOP_MAX_TIERS) {
+		/* kinds[] is the kind-major view used by the training
+		 * scheduler; keep it as the single source of truth so the
+		 * per-kind arrays and the rotation maths can never drift. */
+		c->troop.kinds[kind][rank] += qty;
+		uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
+		                     c->troop.cavalry, c->troop.siege };
+		arr[kind][rank] = c->troop.kinds[kind][rank];
+	}
 	if (kind < 4 && c->troop.tiers < rank + 1)
 		c->troop.tiers = rank + 1;
 	c->troop.total += qty;
@@ -1882,6 +2101,33 @@ static bool GatherTick(Connection *c)
 			better = (best < 0) || d < best_dist ||
 			         (d == best_dist && t->amount > best_amt);
 			break;
+		case 3: {
+			/* Lowest-stock: prioritise the resource the castle is
+			 * shortest of, against a configurable target rather
+			 * than a capacity field (the bot does not track vault
+			 * capacity per resource). Distance still gates it, so
+			 * this never walks across the map for a rounding error.
+			 * Strictly better than amount-maximising for a growing
+			 * account, which otherwise keeps piling into whichever
+			 * resource it already has most of. */
+			uint64_t have = 0;
+			switch (t->kind) {
+			case 1: have = c->resources.food; break;
+			case 2: have = c->resources.rock; break;
+			case 3: have = c->resources.ore;  break;
+			case 4: have = c->resources.wood; break;
+			case 5: have = c->resources.gold; break;
+			default: have = 0;               break;
+			}
+			uint64_t target = c->wave.gather_stock_target
+			                ? c->wave.gather_stock_target : 1000000;
+			/* Shortfall dominates; amount and distance break ties. */
+			score = (have < target) ? (target - have) : 1;
+			score = score * 1000u / (uint64_t)(d + 1);
+			score = score + (uint64_t)t->amount;
+			better = (best < 0) || score > best_score;
+			break;
+		}
 		default: /* 1 mixed */
 			score = (uint64_t)t->amount * 1000u /
 			        (uint64_t)(d + 1);
@@ -2972,6 +3218,7 @@ void WaveTick(Connection *c)
 	TycoonTick(c);        /* 10 kingdom tycoon free daily roll    */
 	GFestTick(c);         /* 10 guild fest scoring                */
 
+	ShelterTick(c);       /* defense: keep the shelter window alive */
 	TrapTick(c);          /* defense upkeep                        */
 	PetTick(c);           /* familiar training                     */
 	HealTick(c);          /* infirmary (free only)                 */

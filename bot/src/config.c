@@ -388,6 +388,47 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strncmp(key, "train.target_", 13) == 0) {
+		/* target_infantry / target_ranged / target_cavalry /
+		 * target_siege — totals including already-trained troops. */
+		const char *k = key + 13;
+		int idx = -1;
+		if (!strcmp(k, "infantry")) idx = 0;
+		else if (!strcmp(k, "ranged")) idx = 1;
+		else if (!strcmp(k, "cavalry")) idx = 2;
+		else if (!strcmp(k, "siege")) idx = 3;
+		if (idx >= 0) {
+			c->train.target_total[idx] =
+				(uint32_t)strtoul(value, NULL, 0);
+			return true;
+		}
+		return false;
+	}
+	
+	if (strcmp(key, "train.max_batch") == 0) {
+		c->train.max_batch = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
+	if (strcmp(key, "train.rotate") == 0) {
+		/* "infantry,ranged,cavalry,siege" — 0 means no rotation and
+		 * the single configured kind is used, as before. */
+		char buf[64];
+		snprintf(buf, sizeof(buf), "%s", value);
+		c->train.rotate_count = 0;
+		for (char *tok = strtok(buf, ","); tok && c->train.rotate_count < 4;
+		     tok = strtok(NULL, ",")) {
+			uint8_t k = 4;
+			if (!strcmp(tok, "infantry")) k = 0;
+			else if (!strcmp(tok, "ranged")) k = 1;
+			else if (!strcmp(tok, "cavalry")) k = 2;
+			else if (!strcmp(tok, "siege")) k = 3;
+			if (k < 4)
+				c->train.rotate_kind[c->train.rotate_count++] = k;
+		}
+		return true;
+	}
+	
 	if (strcmp(key, "train.amount") == 0) {
 		c->train.amount = (uint32_t)strtoul(value, NULL, 10);
 		if (c->train.amount == 0) c->train.amount = 1000;
@@ -467,6 +508,16 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.shelter_always") == 0) {
+		c->wave.shelter_always = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.shelter_always") == 0) {
+		c->wave.shelter_always = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
 	if (strcmp(key, "wave.shelter_on_attack") == 0) {
 		c->wave.shelter_on_attack = (strcmp(value, "true") == 0);
 		return true;
@@ -484,6 +535,21 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 	
 	if (strcmp(key, "wave.vip_collect") == 0) {
 		c->wave.vip_collect = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strncmp(key, "wave.gather_hero", 17) == 0) {
+		int idx = atoi(key + 17);
+		if (idx >= 1 && idx <= 5)
+			c->wave.gather_hero[idx - 1] = (uint16_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
+	if (strncmp(key, "wave.arena_offense_hero", 23) == 0) {
+		int idx = atoi(key + 23);
+		if (idx >= 1 && idx <= 5)
+			c->wave.arena_offense_hero[idx - 1] =
+				(uint16_t)strtoul(value, NULL, 0);
 		return true;
 	}
 	
@@ -612,13 +678,24 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.gather_stock_target") == 0) {
+		c->wave.gather_stock_target = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
 	if (strcmp(key, "wave.gather_priority") == 0) {
-		/* amount | mixed | distance (or 0 | 1 | 2). */
+		/* amount | mixed | distance | lowest (or 0 | 1 | 2 | 3).
+		 * "lowest" targets whichever selected resource the castle is
+		 * shortest of, which beats amount-maximising on a growing
+		 * account; see wave.gather_stock_target. */
 		if (strcmp(value, "amount") == 0 || strcmp(value, "0") == 0)
 			c->wave.gather_priority = 0;
 		else if (strcmp(value, "distance") == 0 ||
 		         strcmp(value, "2") == 0)
 			c->wave.gather_priority = 2;
+		else if (strcmp(value, "lowest") == 0 ||
+		         strcmp(value, "3") == 0)
+			c->wave.gather_priority = 3;
 		else
 			c->wave.gather_priority = 1;
 		return true;
