@@ -1355,6 +1355,62 @@ void WaveRecvTrapInfo(Connection *c, const uint8_t *data, uint16_t size)
 	}
 }
 
+/* Trap repair.
+ *
+ * CONFIRMED against the decompiled client (DataManager.RecvTrapRepairInfo,
+ * opcode 2604): 12 x u32 damaged-trap counts (index = type*4 + tier) +
+ * 12 x u32 in-repair counts + i64 begin + u32 need. The live packet is
+ * 112 bytes including its 4-byte header, which matches exactly.
+ *
+ * Damaged traps are permanently lost capacity: the wall's trap count
+ * drops until they are repaired, so a wall that is never repaired is a
+ * wall that slowly stops defending anything.
+ */
+static uint32_t g_trap_damaged[12];
+static bool     g_trap_repair_loaded = false;
+
+void WaveRecvTrapRepairInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	/* 12 hospital + 12 repair = 96B, then i64 + u32 = 12B. */
+	if (size < 96) {
+		LOGI("[TRAP] repair info short (%uB, want >=96)\n", size);
+		return;
+	}
+	/* One dump: the layout is confirmed against the decompiled client
+	 * but we have never seen a non-zero damaged set on this account, so
+	 * the first non-empty capture is the proof the repair path needs. */
+	static bool repair_dumped = false;
+	if (!repair_dumped) {
+		repair_dumped = true;
+		WaveRecvDump(c, "TRAPREPAIRINFO", data, size);
+	}
+
+	uint16_t offset = 0;
+	uint32_t damaged_total = 0, queued = 0;
+	for (int i = 0; i < 12; i++) {
+		g_trap_damaged[i] = read_u32(data + offset); offset += 4;
+		damaged_total += g_trap_damaged[i];
+	}
+	for (int i = 0; i < 12; i++) {
+		queued += read_u32(data + offset); offset += 4;
+	}
+	g_trap_repair_loaded = true;
+
+	static bool logged = false;
+	if (!logged && damaged_total) {
+		logged = true;
+		LOGI("[TRAP] damaged: %u total (T1 %u/%u/%u/%u  T2 %u/%u/%u/%u  "
+		     "T3 %u/%u/%u/%u), %u already in repair\n",
+		     damaged_total,
+		     g_trap_damaged[0], g_trap_damaged[1],
+		     g_trap_damaged[2], g_trap_damaged[3],
+		     g_trap_damaged[4], g_trap_damaged[5],
+		     g_trap_damaged[6], g_trap_damaged[7],
+		     g_trap_damaged[8], g_trap_damaged[9],
+		     g_trap_damaged[10], g_trap_damaged[11], queued);
+	}
+}
+
 /* Traps are useless at 0 wall HP and are wasted if the wall is already
  * at capacity, so both are checked before queueing more. */
 static void TrapTick(Connection *c)
@@ -1368,6 +1424,33 @@ static void TrapTick(Connection *c)
 	if (g_trap_last && (now - g_trap_last) < 600)
 		return;
 	g_trap_last = now;
+
+	/* Repairs first: damaged traps are capacity that is already lost,
+	 * so this outranks building new ones. */
+	if (g_trap_repair_loaded && c->wave.trap_repair) {
+		for (int i = 0; i < 12; i++) {
+			if (g_trap_damaged[i] == 0)
+				continue;
+			uint8_t type = (uint8_t)(i / 4);
+			uint8_t rank = (uint8_t)(i % 4);
+			uint32_t n = g_trap_damaged[i];
+			if (c->wave.trap_repair_batch && n > c->wave.trap_repair_batch)
+				n = c->wave.trap_repair_batch;
+			if (n == 0)
+				n = 1;
+
+			/* Same shape as construct: kind, rank, count. */
+			uint8_t payload[6];
+			payload[0] = type;
+			payload[1] = rank;
+			write_u32(payload + 2, n);
+			SendRaw(c, _MSG_REQUEST_REPAIRTRAP, payload, 6);
+			g_trap_damaged[i] = 0;
+			LOGI("[TRAP] repair type=%u tier=%u count=%u "
+			     "(resp 2617)\n", type, rank + 1, n);
+			return;
+		}
+	}
 
 	if (!g_trap_loaded) {
 		/* 2602 TRAPINFO is pushed by the server at login (verified:

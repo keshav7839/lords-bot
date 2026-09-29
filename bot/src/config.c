@@ -637,6 +637,16 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.trap_repair") == 0) {
+		c->wave.trap_repair = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.trap_repair_batch") == 0) {
+		c->wave.trap_repair_batch = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
 	if (strcmp(key, "wave.regather_cooldown_s") == 0) {
 		c->wave.regather_cooldown_s = (uint32_t)strtoul(value, NULL, 0);
 		return true;

@@ -786,6 +786,8 @@ typedef struct {
 	uint32_t action_min_gap_ms;
 	/* Seconds to pause gathering after a tile is attacked/scouted. */
 	uint32_t regather_cooldown_s;
+	bool     trap_repair;                /* Repair damaged traps. */
+	uint32_t trap_repair_batch;          /* per-request cap */
 	bool     request_role_info;           /* Send 1004 for ROLEINFO (drops session). */
 	bool     request_build_info;          /* Send 2000 for BUILDINGINFO (drops session). */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */

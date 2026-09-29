@@ -755,6 +755,11 @@ void ProcessConnection(Connection *c)
 					WaveRecvTroopDismiss(c, s->buffer + s->parse_pos + 4,
 					                     s->packet_size - 4);
 					break;
+				case _MSG_RESP_TRAPREPAIRINFO:
+					WaveRecvTrapRepairInfo(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
 				case _MSG_RESP_TRAPINFO:
 					WaveRecvTrapInfo(c, s->buffer + s->parse_pos + 4,
 					                 s->packet_size - 4);
