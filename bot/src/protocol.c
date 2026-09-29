@@ -1569,6 +1569,72 @@ void RecvScoutReport(Connection *c, const uint8_t *data, uint16_t size)
 	     "logged for reverse engineering\n", size);
 }
 
+/* ------------------------------------------------------------------ */
+/* Online gift / mystery box (1117 -> 1118)                            */
+/*                                                                      */
+/* CONFIRMED against the decompiled client                             */
+/* (DataManager.cs: ONLINE_GIFT / RecvOnline_Gift):                     */
+/*   request 1117: seq only, unencrypted. Gated client-side on a        */
+/*     TreasureBox cooldown; the server is the real gate.                */
+/*   response 1118: u8 err | u8 openTimes | i64 nextOpenTime            */
+/*                 | u32 gems | u16 itemId | u16 qty | u8 itemRank      */
+/*                 | u16 giftItemId | u16 giftQty                       */
+/* This is the free Turf box every commercial bot polls (~15 min).      */
+/* It is the single most common P1 claimable and the bot had none.       */
+/* ------------------------------------------------------------------ */
+
+void RequestOnlineGift(Connection *c)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_ONLINE_GIFT);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
+void RecvOnlineGift(Connection *c, const uint8_t *data, uint16_t size)
+{
+	WaveRecvDump(c, "ONLINE_GIFT", data, size);
+	if (size < 1)
+		return;
+
+	if (data[0] != 0) {
+		/* Not ready yet — the box is on a countdown. Remember when it
+		 * opens so the tick does not keep hammering. */
+		if (size >= 10) {
+			c->gift_next_open = read_i64(data + 2);
+			LOGI("[GIFT] box not ready, next open in %llds\n",
+			     (long long)(c->gift_next_open - c->server_time));
+		} else {
+			LOGI("[GIFT] box not ready (err=%u)\n", data[0]);
+		}
+		return;
+	}
+
+	if (size < 10)
+		return;
+
+	uint8_t  open_times = data[1];
+	int64_t  next_open  = read_i64(data + 2);
+	uint32_t gems       = read_u32(data + 10);
+	uint16_t item_id    = (size >= 16) ? read_u16(data + 14) : 0;
+	uint16_t item_qty   = (size >= 18) ? read_u16(data + 16) : 0;
+	uint8_t  item_rank  = (size >= 19) ? data[18] : 0;
+
+	c->gift_next_open = next_open;
+
+	if (gems)
+		c->player.gems += gems;
+	LOGI("[GIFT] box opened: item=%u x%u rank=%u gems=%u "
+	     "(opened today=%u, next in %llds)\n",
+	     item_id, item_qty, item_rank, gems, open_times,
+	     (long long)(next_open - c->server_time));
+}
+
 void RecvLoginRoleInfo(Connection *c, const uint8_t *data, uint16_t size) 
 {
 	uint16_t offset = 0;

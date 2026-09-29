@@ -776,6 +776,7 @@ typedef struct {
 	uint8_t  labyrinth_mode;             /* 0 Turbo (elite), 1 Normal. */
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
 	bool     tycoon;                     /* Kingdom Tycoon free daily roll. */
+	bool     online_gift;                /* Free Turf box (1117). */
 	bool     request_role_info;           /* Send 1004 for ROLEINFO (drops session). */
 	bool     request_build_info;          /* Send 2000 for BUILDINGINFO (drops session). */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */
@@ -1090,6 +1091,8 @@ typedef struct {
 	 * window can be renewed before it lapses — a 12h shelter that
 	 * expires leaves the leader exposed with no troops home, which is
 	 * the single largest permanent-loss risk in the protection set. */
+	/* Next open time of the free Turf box (1118 ONLINE_GIFT). */
+	int64_t  gift_next_open;
 	int64_t  shelter_begin;
 	uint32_t shelter_require;
 	uint16_t shelter_mask;

@@ -1101,6 +1101,41 @@ static void ShelterTick(Connection *c)
 	}
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave E: free Turf box (ONLINE_GIFT 1117 -> 1118)                     */
+/*                                                                      */
+/* Every commercial bot polls this on a ~15 minute cadence: it is the     */
+/* most common P1 claimable (resources / speed-ups / occasional gems)    */
+/* and the bot had no support for it at all. The response carries the    */
+/* next open time, so the tick is driven by the server's own countdown   */
+/* rather than a blind interval.                                         */
+/* ------------------------------------------------------------------ */
+
+static time_t g_gift_last = 0;
+
+static void OnlineGiftTick(Connection *c)
+{
+	if (!c->wave.online_gift)
+		return;
+	if (c->server_time == 0)
+		return;
+
+	time_t now = time(NULL);
+
+	/* Respect the server's countdown when we know it. */
+	if (c->gift_next_open > c->server_time)
+		return;
+
+	/* Back off after a "not ready" so a stale or wrong countdown cannot
+	 * turn this into a request every 10 seconds. */
+	if (g_gift_last && (now - g_gift_last) < 300)
+		return;
+	g_gift_last = now;
+
+	RequestOnlineGift(c);
+	LOGI("[GIFT] free box requested (1117)\n");
+}
+
 static void ArenaTick(Connection *c)
 {
 	if (!c->wave.arena_challenge)
@@ -3201,6 +3236,7 @@ void WaveTick(Connection *c)
 	RewardTick(c);        /* 1  free rewards / treasure / daily    */
 	AllianceGiftTick(c);  /* 1  guild gifts (24h expiry, 300 cap)  */
 	VipTick(c);           /* 1  VIP quest chest (1h)              */
+	OnlineGiftTick(c);    /* 1  free Turf box (~15 min)           */
 	QuestTick(c);         /* 8  daily / admin / guild quests      */
 
 	BuildTick(c);         /* 3  construction queue (+ 2852 help)   */
