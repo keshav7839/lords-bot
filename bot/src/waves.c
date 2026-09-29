@@ -1166,6 +1166,150 @@ static void ShelterTick(Connection *c)
 	}
 }
 
+/* 1417 equipment inventory.
+ *
+ * CONFIRMED layout (LordEquipData.Recv_MSG_RESP_LORDEQUIP, type 0):
+ *   u8 type | i64 updateTime | u16 offset | u16 count
+ *   | count x 27B record
+ * offset 0 with count 0 is a "clear everything" packet. Records arrive
+ * in pages of up to 200, so a non-zero offset means a continuation.
+ */
+static uint16_t g_gear_inv[200][3];   /* itemID, color, serial(low) */
+static uint16_t g_gear_inv_count = 0;
+static bool     g_gear_inv_loaded = false;
+
+void WaveRecvLordEquipInv(Connection *c, const uint8_t *data, uint16_t size)
+{
+	static bool dumped = false;
+	if (!dumped) {
+		dumped = true;
+		WaveRecvDump(c, "LORDEQUIP_INV", data, size);
+	}
+	if (size < 14)
+		return;
+	uint16_t offset = 0;
+	uint8_t  type   = data[offset++];
+	int64_t  upd    = (int64_t)read_u64(data + offset); offset += 8;
+	uint16_t start  = read_u16(data + offset); offset += 2;
+	uint16_t count  = read_u16(data + offset); offset += 2;
+	(void)upd;
+
+	if (type != 0) {
+		LOGI("[GEAR] inventory packet type=%u (not the list form)\n",
+		     type);
+		return;
+	}
+	if (start == 0 && count == 0) {
+		g_gear_inv_count = 0;
+		g_gear_inv_loaded = true;
+		LOGI("[GEAR] inventory cleared by server\n");
+		return;
+	}
+
+	for (uint16_t i = 0; i < count && start + i < 200; i++) {
+		if (offset + 27 > size)
+			break;
+		uint16_t item_id = read_u16(data + offset);
+		uint8_t  color   = data[offset + 2];
+		/* +3 itemID+color, +4 gem colours, +8 gem ids, +4 serial */
+		uint32_t serial  = read_u32(data + offset + 15);
+		offset += 27;
+		g_gear_inv[start + i][0] = item_id;
+		g_gear_inv[start + i][1] = color;
+		g_gear_inv[start + i][2] = (uint16_t)serial;
+	}
+	if (start + count > g_gear_inv_count)
+		g_gear_inv_count = start + count;
+	g_gear_inv_loaded = true;
+
+	char line[256];
+	size_t off = 0;
+	for (uint16_t i = 0; i < g_gear_inv_count && off < sizeof(line) - 20; i++) {
+		if (!g_gear_inv[i][0])
+			continue;
+		off += (size_t)snprintf(line + off, sizeof(line) - off,
+		                       "%sitem%u/q%u", off ? " " : "",
+		                       g_gear_inv[i][0],
+		                       (unsigned)g_gear_inv[i][1]);
+	}
+	LOGI("[GEAR] inventory: %u entries: %s\n", g_gear_inv_count,
+	     line[0] ? line : "(empty)");
+}
+
+/* Mystic Spire item craft (8216 ITEMCRAFT_INFO).
+ *
+ * CONFIRMED request shape (PetManager.SendItemCraft_Start):
+ *   seq | u16 craftID | u16 count | u8 instantComplete
+ *
+ * The response is variant-tagged: first byte 3 selects a different
+ * parser, otherwise a second byte selects type 0/1/2 with their own
+ * field sets. The account's live 20-byte payload is dumped once so the
+ * branch can be identified from real data rather than assumed. */
+static bool g_itemcraft_dumped = false;
+
+void WaveRecvItemCraftInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	if (!g_itemcraft_dumped) {
+		g_itemcraft_dumped = true;
+		WaveRecvDump(c, "ITEMCRAFT_INFO", data, size);
+	}
+	if (size < 2)
+		return;
+	uint8_t first = data[0];
+	LOGI("[SPIRE] craft info %uB variant=%u sub=%u\n",
+	     size, first, data[1]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Wave D: leader equipment (3804 ONLORDEQUIP_INFO)                    */
+/*                                                                      */
+/* Layout CONFIRMED against the decompiled client                       */
+/* (LordEquipData.Recv_MSG_RESP_ONLORDEQUIP_INFO): 8 slots, each        */
+/*   u16 itemID | u8 color | 4x u8 gemColor | 4x u16 gemID | u32 serial */
+/* = 27 bytes per slot, 216 total. The bot already receives this push   */
+/* and was discarding it, so it had no idea what gear the account owns.  */
+/*                                                                      */
+/* Request shapes (same source, for when a swap is wired):              */
+/*   3805 equip/unequip : seq | u8 equipPos | u32 serial                */
+/*   3809 craft         : seq | u16 itemID  | u32 serial                */
+/* ------------------------------------------------------------------ */
+
+void WaveRecvLordEquipInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	/* 8 x 27 = 216. Tolerate a short packet rather than reading past
+	 * the end of the buffer. */
+	uint16_t offset = 0;
+	uint16_t equipped = 0;
+	char line[256];
+	size_t off = 0;
+
+	for (int slot = 0; slot < 8; slot++) {
+		if (offset + 27 > size) {
+			LOGI("[GEAR] info short at slot %d (%uB read of %u)\n",
+			     slot, offset, size);
+			break;
+		}
+		uint16_t item_id = read_u16(data + offset);
+		uint8_t  color   = data[offset + 2];
+		offset += 3;                       /* itemID + color */
+		offset += 4;                       /* 4 gem colours  */
+		offset += 8;                       /* 4 gem ids      */
+		uint32_t serial  = read_u32(data + offset);
+		offset += 4;
+
+		if (item_id != 0) {
+			equipped++;
+			off += (size_t)snprintf(line + off, sizeof(line) - off,
+			                       "%sslot%d=item%u/q%u/s%u",
+			                       off ? " " : "", slot, item_id,
+			                       (unsigned)color, serial);
+		}
+	}
+
+	LOGI("[GEAR] %u of 8 slots equipped: %s\n", equipped,
+	     equipped ? line : "(nothing)");
+}
+
 /* ------------------------------------------------------------------ */
 /* Wave E: free Turf box (ONLINE_GIFT 1117 -> 1118)                     */
 /*                                                                      */

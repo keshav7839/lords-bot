@@ -657,6 +657,10 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.load_equip_inventory") == 0) {
+		c->wave.load_equip_inventory = (strcmp(value, "true") == 0);
+		return true;
+	}
 	if (strcmp(key, "wave.online_gift") == 0) {
 		c->wave.online_gift = (strcmp(value, "true") == 0);
 		return true;

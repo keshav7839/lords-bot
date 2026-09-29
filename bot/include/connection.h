@@ -795,6 +795,7 @@ typedef struct {
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
 	bool     tycoon;                     /* Kingdom Tycoon free daily roll. */
 	bool     online_gift;                /* Free Turf box (1117). */
+	bool     load_equip_inventory;       /* Ask for gear inventory (1416). */
 	/* Minimum ms between feature actions + jitter. Anti-detection: a
 	 * metronomic cadence is a fingerprint. 0 disables the gate. */
 	uint32_t action_min_gap_ms;
@@ -1136,6 +1137,7 @@ typedef struct {
 	bool init_deferred;
 	bool roleinfo_requested;
 	bool buildinfo_requested;
+	bool equipinv_requested;
 } Connection;
 
 /* API */

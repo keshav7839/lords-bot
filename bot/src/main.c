@@ -92,6 +92,10 @@ void BotTick(Connection *c)
 					     "scan/gather stay blocked until the "
 					     "server accepts 1004 post-login\n");
 			}
+			if (c->wave.load_equip_inventory && !c->equipinv_requested) {
+				c->equipinv_requested = true;
+				RequestLoadEquip(c, 0);
+			}
 			if (!c->buildinfo_requested) {
 				c->buildinfo_requested = true;
 				/* Opcode 2000 is a guess (2001 is the response,
@@ -679,6 +683,20 @@ void ProcessConnection(Connection *c)
 					break;
 				case _MSG_RESP_BEINGATTACK:
 					WaveRecvBeingAttacked(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_LORDEQUIP:
+					WaveRecvLordEquipInv(c, s->buffer + s->parse_pos + 4,
+					                   s->packet_size - 4);
+					break;
+				case _MSG_ITEMCRAFT_INFO:
+					WaveRecvItemCraftInfo(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_ONLORDEQUIP_INFO:
+					WaveRecvLordEquipInfo(c,
 						s->buffer + s->parse_pos + 4,
 						s->packet_size - 4);
 					break;

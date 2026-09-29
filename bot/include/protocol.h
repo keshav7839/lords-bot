@@ -25,6 +25,9 @@ void RequestRequestOwnHelp(Connection *c);
 void RequestOnlineGift(Connection *c);
 void RecvOnlineGift(Connection *c, const uint8_t *data, uint16_t size);
 void RequestSendScout(Connection *c, uint16_t zone, uint8_t point);
+void RequestLoadEquip(Connection *c, int64_t since);
+void RequestEquipSwap(Connection *c, uint8_t pos, uint32_t serial);
+void RequestCraftEquip(Connection *c, uint16_t item_id, uint32_t serial);
 void RecvScoutReport(Connection *c, const uint8_t *data, uint16_t size);
 void RequestViewChat(Connection *c, uint8_t channel, uint8_t prev, int8_t kind, int64_t DataID, int64_t DataTime);
 

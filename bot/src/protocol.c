@@ -1554,6 +1554,72 @@ uint16_t RoleAttrLevelUp(const uint8_t *data, int UpdateFlag) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Leader equipment (1416 LOADEQUIP / 1417 RESP / 3805 swap / 3809 craft) */
+/*                                                                      */
+/* All four shapes CONFIRMED against the decompiled client               */
+/* (LordEquipData.cs):                                                   */
+/*   1416 LOADEQUIP   req : seq | i64 lastUpdateTime  (0 = full load)   */
+/*   1417 RESP_LORDEQUIP   : u8 type | i64 updateTime | u16 offset |     */
+/*                           u16 count | count x 27B record            */
+/*                           record: u16 itemID | u8 color |            */
+/*                                   4x u8 gemColor | 4x u16 gem |     */
+/*                                   u32 serial                          */
+/*                           offset==0 && count==0 => full reset        */
+/*   3805 PUTON/TAKEOFF   : seq | u8 equipPos | u32 serial             */
+/*   3809 SYN_LORDEQUIP    : seq | u16 itemID  | u32 serial             */
+/*                                                                      */
+/* The bot already receives 3804 (what is worn) but never asked for the  */
+/* inventory, so it had no idea what it could swap to.                   */
+/* ------------------------------------------------------------------ */
+
+void RequestLoadEquip(Connection *c, int64_t since)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_LOADEQUIP);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u64(c->data + c->size, (uint64_t)since);
+	c->size += 8;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+	LOGI("[GEAR] equipment inventory requested (1416, since=%lld)\n",
+	     (long long)since);
+}
+
+void RequestEquipSwap(Connection *c, uint8_t pos, uint32_t serial)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_PUTON_TAKEOFF_LORDEQUIP);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u8 (c->data + c->size, pos);    c->size += 1;
+	write_u32(c->data + c->size, serial); c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
+void RequestCraftEquip(Connection *c, uint16_t item_id, uint32_t serial)
+{
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_SYN_LORDEQUIP);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u16(c->data + c->size, item_id); c->size += 2;
+	write_u32(c->data + c->size, serial);  c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
+/* ------------------------------------------------------------------ */
 /* Scouting (2448 SENDSCOUT)                                            */
 /*                                                                      */
 /* Payload CONFIRMED against the decompiled client                      */
