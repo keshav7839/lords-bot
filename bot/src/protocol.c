@@ -2417,7 +2417,16 @@ bool IsBuilding(uint16_t build_id)
         case 13:  // Watchtower
         case 14:  // Embassy
         case 15:  // Workshop
+        case 16:  // Golem Tower
         case 17:  // Trading Post
+        case 18:  // Mystic Spire (familiars)
+        case 19:  // Sanctuary
+        case 20:  // Monsterhold
+        case 21:  // Altar
+        case 22:  // Prison
+        case 23:  // Battle Hall
+        case 24:  // Hall of Order
+        case 25:  // Command Center
             return true;
 
         default:
@@ -2443,7 +2452,16 @@ const char *GetBuildingName(uint16_t build_id)
         case 13: return "Watchtower";
         case 14: return "Embassy";
         case 15: return "Workshop";
+        case 16: return "Golem Tower";
         case 17: return "Trading Post";
+        case 18: return "Mystic Spire";
+        case 19: return "Sanctuary";
+        case 20: return "Monsterhold";
+        case 21: return "Altar";
+        case 22: return "Prison";
+        case 23: return "Battle Hall";
+        case 24: return "Hall of Order";
+        case 25: return "Command Center";
         default: return "Unknown";
     }
 }
@@ -2577,6 +2595,25 @@ void RecvAllBuildData(Connection *c, const uint8_t *data)
 		g_builddata_logged = true;
 		LOGI("[BUILD] building list received: %u buildings "
 		     "(trading post lv=%u)\n", c->building_count, trading_post_lv);
+		/* One-shot id census. The building enum only names ids 1-17,
+		 * but the account clearly owns more (Mystic Spire, Monsterhold,
+		 * Familiars, Artifact Hall, Workshop upgrades...). Dumping the
+		 * real id/level table turns every future building feature from
+		 * a guess into a known value. */
+		/* Condensed to one line: only the buildings the scheduler can
+		 * actually act on, otherwise this is 66 log lines per login. */
+		char list[512];
+		size_t off = 0;
+		for (int i = 0; i < c->building_count && off < sizeof(list) - 24;
+		     i++) {
+			BuildingInfo *b = &c->building[i];
+			if (!IsBuilding(b->build_id))
+				continue;
+			off += (size_t)snprintf(list + off, sizeof(list) - off,
+			                       "%s%u:%u", off ? " " : "",
+			                       b->build_id, b->level);
+		}
+		LOGI("[BUILD] upgradeable census: %s\n", list);
 	}
 	
 }

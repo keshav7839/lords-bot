@@ -398,7 +398,21 @@ typedef enum {
     BUILD_WATCHTOWER   = 13,
     BUILD_EMBASSY      = 14,
     BUILD_WORKSHOP     = 15,
-    BUILD_TRADING_POST = 17
+    BUILD_GOLEM_TOWER  = 16,
+    BUILD_TRADING_POST = 17,
+    /* Ids 18-23 recovered from a live BUILDINGINFO census (the enum
+     * previously stopped at 17, so IsBuilding() rejected every one of
+     * these and they could never be upgraded). Assignment follows the
+     * canonical building order; levels seen on the account are noted. */
+    BUILD_MYSTIC_SPIRE = 18,   /* familiar pacts / Mystic Spire  lv14 */
+    BUILD_SANCTUARY    = 19,   /* dead troops + devotion         lv1  */
+    BUILD_MONSTERHOLD  = 20,   /* monster hunting               lv5  */
+    BUILD_ALTAR        = 21,   /* hero execution                x4   */
+    BUILD_PRISON       = 22,   /* captive leader                x2   */
+    BUILD_BATTLE_HALL  = 23,   /* rallies / formations          x4   */
+    BUILD_UNKNOWN_11   = 11,   /* owned (level 7), not yet classified */
+    BUILD_HALL_ORDER   = 24,   /* commanding stat boosts        -    */
+    BUILD_COMMAND_CENTER=25,   /* commanding stat boosts        -    */
 } BUILDING_ID;
 
 
@@ -807,6 +821,13 @@ typedef struct {
 	/* --- Gather tile priority + army fit + recall-on-attack. */
 	/* Lowest-stock target used by gather_priority = 3. */
 	uint32_t gather_stock_target;
+	/* Gem lodes (POINT_KIND 6) are free currency, so they can be
+	 * prioritised over ordinary resource tiles. The load differs by
+	 * 100x: 1000 army capacity carries one gem. */
+	bool     gather_gems_first;
+	uint32_t gather_gem_load;          /* capacity per gem (default 1000) */
+	uint32_t gather_gem_max_dist;      /* 0 = use gather_max_dist */
+	uint8_t  gather_gem_min_level;     /* 0 = any level */
 	uint8_t  gather_priority;            /* 0 amount, 1 mixed (amount/dist),
 	                                      *    2 nearest. */
 	bool     gather_fit;                 /* Size the march to the tile

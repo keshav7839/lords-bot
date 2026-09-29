@@ -123,6 +123,7 @@ void WaveRecvDump(Connection *c, const char *tag,
 static time_t g_build_busy_warned = 0;
 static time_t g_build_nowarn = 0;
 static time_t g_help_last = 0;
+static bool g_build_decided = false;
 
 static bool queue_idle(const BuildQueueInfo *q, int64_t server_time)
 {
@@ -161,11 +162,24 @@ static time_t g_build_err_logged = 0;
 static uint8_t g_build_cursor = 0;
 static bool    g_build_pending = false; /* waiting for BUILDBEGIN/ERROR */
 
+/* Upgrade order, highest value first.
+ *
+ * Follows the reference bot's documented order (Castle -> Resource ->
+ * Academy -> Manor -> Barracks/Infirmary -> Monsterhold -> Mystic Spire
+ * -> Trading Post -> Resource-no-manor -> Treasure Trove -> Workshop),
+ * with the ids 18-23 that the previous enum did not name - they were
+ * rejected by IsBuilding() and so were never upgraded at all.
+ *
+ * Notes on the tail: Prison/Altar/Battle Hall are military unlocks
+ * behind very long chains, so they sit low and the scheduler will only
+ * reach them once everything above is capped. */
 static const uint16_t default_build_priority[] = {
-	BUILD_CASTLE, BUILD_ACADEMY, BUILD_WALL, BUILD_MANOR, BUILD_VAULT,
-	BUILD_INFIRMARY, BUILD_BARRACKS, BUILD_TRADING_POST, BUILD_WATCHTOWER,
-	BUILD_EMBASSY, BUILD_WORKSHOP, BUILD_TIMBER, BUILD_STONE, BUILD_ORE,
-	BUILD_FOOD
+	BUILD_CASTLE, BUILD_ACADEMY, BUILD_MANOR, BUILD_BARRACKS,
+	BUILD_INFIRMARY, BUILD_MONSTERHOLD, BUILD_MYSTIC_SPIRE,
+	BUILD_TRADING_POST, BUILD_WALL, BUILD_WATCHTOWER, BUILD_EMBASSY,
+	BUILD_WORKSHOP, BUILD_VAULT, BUILD_GOLEM_TOWER, BUILD_SANCTUARY,
+	BUILD_TIMBER, BUILD_STONE, BUILD_ORE, BUILD_FOOD,
+	BUILD_ALTAR, BUILD_PRISON, BUILD_BATTLE_HALL
 };
 
 void WaveUpgradeOne(Connection *c)
@@ -210,6 +224,16 @@ void WaveUpgradeOne(Connection *c)
 	}
 
 	uint8_t max_level = c->wave.build_max_level ? c->wave.build_max_level : 25;
+
+	/* One-shot decision trace: the build path is silent on the idle
+	 * branch, so "no upgrade" is indistinguishable from "no target
+	 * found" without it. */
+	if (!g_build_decided) {
+		g_build_decided = true;
+		LOGI("[BUILD] deciding: %u buildings, %u priority targets, "
+		     "max_level=%u, queue free\n",
+		     c->building_count, prio_count, max_level);
+	}
 
 	/* Rotate through the priority list using g_build_cursor so a
 	 * building rejected by the server (prereq / resources) does not
@@ -294,9 +318,11 @@ static void BuildTick(Connection *c)
 	 * within ~2 minutes (a build without it runs 60+ min clean). A
 	 * guildless player has nobody to help, so the request is
 	 * meaningless anyway. */
-	if (c->RoleAlliance.Channel == 0)
-		return;
-	if (c->alliance.request_own_help) {
+	/* BUG: this used to `return` when the account has no guild, which
+	 * aborted the rest of BuildTick — so on a guildless account NO
+	 * building upgrade was ever attempted, silently. The guild check
+	 * belongs around the help request only, not around the whole tick. */
+	if (c->alliance.request_own_help && c->RoleAlliance.Channel != 0) {
 		if (!g_help_last || (now - g_help_last) >= 10) {
 			g_help_last = now;
 			RequestRequestOwnHelp(c);
@@ -2275,6 +2301,7 @@ static bool GatherTick(Connection *c)
 	uint32_t best_amt = 0;
 	int best_dist = 0;
 	uint64_t best_score = 0;
+	uint8_t best_kind = 0;
 
 	for (uint16_t i = 0; i < c->map_tile_count; i++) {
 		MapTile *t = &c->map_tiles[i];
@@ -2284,14 +2311,44 @@ static bool GatherTick(Connection *c)
 			continue;
 		if (t->amount == 0)               /* empty or already marched */
 			continue;
-		uint32_t min_amt = c->wave.gather_min_amount;
-		if (min_amt && t->amount < min_amt)
+		/* Gem lodes are POINT_KIND 6 (PK_CRYSTAL). They are free
+		 * currency, so when gather_gems_first is set they jump the
+		 * queue regardless of level or distance. The resource
+		 * min_amount filter deliberately does NOT apply to them: a
+		 * 10-gem L1 lode is still a correct target. */
+		bool is_gem = (t->kind == 6);
+		if (!is_gem) {
+			uint32_t min_amt = c->wave.gather_min_amount;
+			if (min_amt && t->amount < min_amt)
+				continue;
+		} else if (c->wave.gather_gem_min_level &&
+		           t->level < c->wave.gather_gem_min_level) {
 			continue;
+		}
 		map_pos_t p = getTileMapPosbyMapID(
 			PointCodeToMapID(t->zone, t->point));
 		int d = TileDist(home, p);
-		if (c->wave.gather_max_dist && d > (int)c->wave.gather_max_dist)
+		/* Gem lodes are worth a longer walk than ordinary resources,
+		 * but not an unbounded one. */
+		uint32_t max_d = c->wave.gather_max_dist;
+		if (is_gem && c->wave.gather_gem_max_dist)
+			max_d = c->wave.gather_gem_max_dist;
+		if (max_d && d > (int)max_d)
 			continue;
+
+		if (is_gem && c->wave.gather_gems_first) {
+			/* Strictly outranks every resource tile, best lode by
+			 * gems-remaining then distance. */
+			bool gbetter = (best < 0) || best_kind != 6 ||
+			               (t->amount > best_amt) ||
+			               (t->amount == best_amt && d < best_dist);
+			if (gbetter) {
+				best = i; best_amt = t->amount;
+				best_dist = d; best_score = 0;
+				best_kind = t->kind;
+			}
+			continue;
+		}
 
 		/* Tile priority: 0 = most amount, 1 = amount per travel
 		 * cell (near + rich), 2 = nearest first. */
@@ -2343,6 +2400,7 @@ static bool GatherTick(Connection *c)
 			best_amt = t->amount;
 			best_dist = d;
 			best_score = score;
+			best_kind = t->kind;
 		}
 	}
 	if (best < 0) {
@@ -2397,6 +2455,13 @@ static bool GatherTick(Connection *c)
 	const uint32_t *send16 = NULL;
 	if (c->wave.gather_fit && t->amount) {
 		uint32_t load = c->wave.gather_load ? c->wave.gather_load : 10;
+		/* Gem lodes invert the usual ratio: 1000 army capacity carries
+		 * exactly 1 gem, versus ~10 resources per troop on a normal
+		 * tile. Using the resource divisor here would send a fraction
+		 * of the needed force and trickle gems instead of clearing the
+		 * lode before the next spawn. */
+		if (t->kind == 6 && c->wave.gather_gem_load)
+			load = c->wave.gather_gem_load;
 		const uint32_t *kinds[4] = { c->troop.infantry, c->troop.ranged,
 		                             c->troop.cavalry, c->troop.siege };
 		uint64_t cap = 0;
@@ -2426,6 +2491,12 @@ static bool GatherTick(Connection *c)
 				troops16[k * 4 + ti] = v;
 				send += v;
 			}
+		if (t->kind == 6) {
+			LOGI("[GATHER] gem lode level=%u gems=%u load=%u "
+			     "cap=%llu send=%u/%u troops (1000 capacity per "
+			     "gem)\n", t->level, t->amount, load,
+			     (unsigned long long)cap, send, have);
+		}
 		if (send && send < have) {
 			send16 = troops16;
 			LOGI("[GATHER] fit: amount=%u cap=%llu load=%u "

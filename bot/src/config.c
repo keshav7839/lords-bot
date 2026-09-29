@@ -713,6 +713,22 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "wave.gather_gems_first") == 0) {
+		c->wave.gather_gems_first = (strcmp(value, "true") == 0);
+		return true;
+	}
+	if (strcmp(key, "wave.gather_gem_load") == 0) {
+		c->wave.gather_gem_load = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	if (strcmp(key, "wave.gather_gem_max_dist") == 0) {
+		c->wave.gather_gem_max_dist = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	if (strcmp(key, "wave.gather_gem_min_level") == 0) {
+		c->wave.gather_gem_min_level = (uint8_t)strtoul(value, NULL, 0);
+		return true;
+	}
 	if (strcmp(key, "wave.gather_stock_target") == 0) {
 		c->wave.gather_stock_target = (uint32_t)strtoul(value, NULL, 0);
 		return true;
