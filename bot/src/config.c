@@ -405,6 +405,16 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return false;
 	}
 	
+	if (strcmp(key, "train.dismiss_above") == 0) {
+		c->train.dismiss_above = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "train.dismiss_batch") == 0) {
+		c->train.dismiss_batch = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
 	if (strcmp(key, "train.max_batch") == 0) {
 		c->train.max_batch = (uint32_t)strtoul(value, NULL, 0);
 		return true;
@@ -624,6 +634,16 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 	
 	if (strcmp(key, "wave.request_role_info") == 0) {
 		c->wave.request_role_info = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.regather_cooldown_s") == 0) {
+		c->wave.regather_cooldown_s = (uint32_t)strtoul(value, NULL, 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.action_min_gap_ms") == 0) {
+		c->wave.action_min_gap_ms = (uint32_t)strtoul(value, NULL, 0);
 		return true;
 	}
 	

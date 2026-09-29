@@ -702,6 +702,10 @@ typedef struct {
 	 * up instead of over-trained. */
 	uint32_t target_total[4];
 	uint32_t max_batch;          /* per-request cap, 0 = uncapped */
+	/* Dismiss troops above the per-kind target (ceiling). An over-trained
+	 * surplus is what dies on the first real hit. */
+	bool     dismiss_above;
+	uint32_t dismiss_batch;      /* per-request cap */
 	/* Rotation. Training one kind forever yields a mono-army that is
 	 * countered for free (inf -> ranged -> cav -> inf). */
 	uint8_t  rotate_kind[4];
@@ -777,6 +781,11 @@ typedef struct {
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
 	bool     tycoon;                     /* Kingdom Tycoon free daily roll. */
 	bool     online_gift;                /* Free Turf box (1117). */
+	/* Minimum ms between feature actions + jitter. Anti-detection: a
+	 * metronomic cadence is a fingerprint. 0 disables the gate. */
+	uint32_t action_min_gap_ms;
+	/* Seconds to pause gathering after a tile is attacked/scouted. */
+	uint32_t regather_cooldown_s;
 	bool     request_role_info;           /* Send 1004 for ROLEINFO (drops session). */
 	bool     request_build_info;          /* Send 2000 for BUILDINGINFO (drops session). */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */

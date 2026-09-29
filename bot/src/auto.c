@@ -30,6 +30,87 @@ static const char *TroopKindName(uint8_t kind)
 	}
 }
 
+/* Dismiss surplus troops.
+ *
+ * Training targets are per-kind totals, so the scheduler tops up toward
+ * them; what it does not do is shrink back. A surplus above the
+ * configured ceiling is exactly what dies when the account is hit, and
+ * wounded troops overflow the infirmary into the sanctuary.
+ *
+ * Guards, all of which matter:
+ *  - only when the queue is idle and nothing is in flight to a march
+ *  - never below the configured target (the target IS the ceiling)
+ *  - per-request cap so one dismiss is a correction, not a purge
+ *  - dismissed amounts are credited locally so the next cycle does not
+ *    re-dismiss the same troops
+ */
+static time_t g_dismiss_last = 0;
+
+void DismissTick(Connection *c)
+{
+	if (!c->train.dismiss_above)
+		return;
+	if (c->server_time == 0)
+		return;
+	if (!c->troop.loaded)
+		return;
+
+	time_t now = time(NULL);
+	if (g_dismiss_last && (now - g_dismiss_last) < 900)
+		return;
+
+	/* Never dismiss while troops are marching: the server count and the
+	 * on-map force differ, and dismissing a marching force is rejected. */
+	if (c->player.current_marches > 0)
+		return;
+	if (c->train.pending_qty > 0)
+		return;
+
+	for (uint8_t kind = 0; kind < 4; kind++) {
+		uint32_t ceiling = c->train.target_total[kind];
+		if (ceiling == 0)
+			continue;
+
+		uint64_t have = 0;
+		for (uint8_t t = 0; t < 4; t++)
+			have += c->troop.kinds[kind][t];
+		if (have <= ceiling)
+			continue;
+
+		uint32_t excess = (uint32_t)(have - ceiling);
+		/* Correct the biggest tier first — it carries the most
+		 * upkeep and the worst wound/death maths. */
+		for (int t = 3; t >= 0 && excess > 0; t--) {
+			uint32_t n = c->troop.kinds[kind][t];
+			if (n == 0)
+				continue;
+			if (n > excess)
+				n = excess;
+			if (c->train.dismiss_batch && n > c->train.dismiss_batch)
+				n = c->train.dismiss_batch;
+			if (n == 0)
+				continue;
+
+			RequestTroopDismiss(c, kind, (uint8_t)(t + 1), n);
+			c->troop.kinds[kind][t] -= n;
+			if (t < 4) {
+				uint32_t *arr[4] = { c->troop.infantry,
+					c->troop.ranged, c->troop.cavalry,
+					c->troop.siege };
+				arr[kind][t] = c->troop.kinds[kind][t];
+			}
+			if (c->troop.total >= n)
+				c->troop.total -= n;
+			excess -= n;
+			g_dismiss_last = now;
+			LOGI("[TRAIN] dismiss %s T%u x%u (have %llu > ceiling "
+			     "%u)\n", TroopKindName(kind), t + 1, n,
+			     (unsigned long long)have, ceiling);
+			return;   /* one correction per cycle */
+		}
+	}
+}
+
 void TrainingTick(Connection *c)
 {
 	if (!c->train.enabled)

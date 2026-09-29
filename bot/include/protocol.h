@@ -10,6 +10,7 @@ void RequestClientInitOver(Connection *conn);
 void RequestHeartBeat(Connection *conn);
 
 void RequestTroopTraining(Connection *c, uint8_t kind, uint8_t tier, uint32_t amount);
+void RequestTroopDismiss(Connection *c, uint8_t kind, uint8_t tier, uint32_t qty);
 void RequestFinishTraining(Connection *c);
 void RequestHealTroops(Connection *c, uint8_t style);
 /* troops16: optional 16xu32 kind-major T1..T4 override (fit-to-tile);
@@ -132,6 +133,7 @@ void DarknestRallyTick(Connection *);
 
 /* Wave A automations (auto.c) */
 void TrainingTick(Connection *c);
+void DismissTick(Connection *c);
 void SpeedupTick(Connection *c);
 
 void RecvWarBegin(Connection *c, const uint8_t *data);

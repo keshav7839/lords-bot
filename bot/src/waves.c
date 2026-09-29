@@ -38,9 +38,48 @@
 /* helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+/* Global action pacing.
+ *
+ * Every commercial bot has a "Worker Speed" gate (the reference default
+ * is 1s between *every* action) and community ban data is explicit that
+ * a metronomic action cadence is a fingerprint. This is that gate for
+ * feature sends: a minimum gap plus jitter, so the interval is never
+ * identical twice running.
+ *
+ * Only feature packets go through here. Heartbeats, login and the recv
+ * path are untouched, so session health is never risked by pacing.
+ *
+ * A skipped send is safe because every wave tick is level-triggered —
+ * it re-evaluates world state each pass rather than acting once on an
+ * edge, so the next pass simply re-issues the decision.
+ */
+static time_t g_last_action = 0;
+static uint32_t g_pace_skipped = 0;
+
 static void SendRaw(Connection *c, uint16_t opcode,
                     const uint8_t *payload, uint16_t len)
 {
+	uint32_t gap = c->wave.action_min_gap_ms;
+	if (gap > 0) {
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		int64_t now_ms = (int64_t)ts.tv_sec * 1000 +
+		                 ts.tv_nsec / 1000000;
+		if (g_last_action) {
+			uint32_t jitter = (uint32_t)((now_ms * 7919u) %
+			                             (gap + 1));
+			uint32_t need = gap - (gap / 4) + jitter;   /* 75-100% */
+			if ((uint64_t)(now_ms - g_last_action) < need) {
+				g_pace_skipped++;
+				if (g_pace_skipped == 1 || g_pace_skipped % 50 == 0)
+					LOGI("[PACE] held back (min %ums, %u "
+					     "held)\n", gap, g_pace_skipped);
+				return;
+			}
+		}
+		g_last_action = now_ms;
+	}
+
 	c->size = 2;
 	write_u16(c->data + c->size, opcode);
 	c->size += 2;
@@ -1730,6 +1769,23 @@ static void CreditSoldiers(Connection *c, uint8_t kind, uint8_t rank,
 	     why, qty, rank + 1, kind, c->troop.total);
 }
 
+/* 2405 dismiss result. The local ledger is already decremented when the
+ * request is sent, so this only reports what the server actually did —
+ * if it rejects, the counts must be re-synced from the next army push
+ * (2401) rather than left wrong. */
+void WaveRecvTroopDismiss(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("TROOPDISMISS_RESP", data, size, 24);
+	if (size == 0)
+		return;
+	if (data[0] != 0) {
+		LOGI("[TRAIN] dismiss rejected (err=%u) — local counts will "
+		     "re-sync on the next army push\n", data[0]);
+		return;
+	}
+	LOGI("[TRAIN] dismiss accepted (size=%u)\n", size);
+}
+
 void WaveRecvFinishTraining(Connection *c, const uint8_t *data, uint16_t size)
 {
 	HexPreview("FINISH_TRAINING", data, size, 48);
@@ -1779,6 +1835,10 @@ void GatherRecallAll(Connection *c, const char *why)
 {
 	if (!c->protection.recall_on_incoming_attack)
 		return;
+
+	/* A threat just landed on a tile we were working. Pause dispatching
+	 * for a moment so we do not walk straight back into it. */
+	GatherSetRegatherCooldown(c->wave.regather_cooldown_s);
 
 	int n = 0;
 	for (uint8_t s = 0; s < 8; s++) {
@@ -2069,6 +2129,20 @@ static int TileDist(map_pos_t a, map_pos_t b)
 }
 
 static time_t g_gather_last = 0;
+/* "Time to wait before regathering": after a tile is attacked or
+ * scouted the bot must not immediately re-march into the same contested
+ * tile — the attacker is usually still there, and re-marching
+ * re-telegraphs the account to anyone watching the map. */
+static time_t g_regather_block_until = 0;
+static time_t g_gather_block_logged = 0;
+
+void GatherSetRegatherCooldown(uint32_t seconds)
+{
+	if (seconds == 0)
+		return;
+	g_regather_block_until = time(NULL) + (time_t)seconds;
+	LOGI("[GATHER] regathering paused for %us after a threat\n", seconds);
+}
 static time_t g_hunt_last = 0;
 static time_t g_notroop_warn = 0;
 static time_t g_gather_nowarn = 0;
@@ -2086,6 +2160,18 @@ static bool GatherTick(Connection *c)
 	                                               : 60;
 	if (g_gather_last && (now - g_gather_last) < (time_t)interval)
 		return false;
+
+	/* Do not re-march into a tile that was just attacked or scouted:
+	 * the attacker is often still standing there, and re-marching
+	 * re-telegraphs the account to everyone watching the map. */
+	if (now < g_regather_block_until) {
+		if (now > g_gather_block_logged) {
+			g_gather_block_logged = now + 60;
+			LOGI("[GATHER] regather cooldown, %llds left\n",
+			     (long long)(g_regather_block_until - now));
+		}
+		return false;
+	}
 
 	if (c->troop.total == 0) {
 		if (!g_notroop_warn || (now - g_notroop_warn) > 600) {

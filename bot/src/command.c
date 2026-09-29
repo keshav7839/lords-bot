@@ -1,5 +1,6 @@
 #include "command.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include "items.h"
 #include "protocol.h"
 #include "waves.h"
@@ -228,6 +229,45 @@ void command_handler(Connection *c, const char *player_name, const char *message
 		WaveResearchOne(c);
 		RequestSendMail(c, player_name, "Research",
 		                "Research start attempted - see bot log.");
+		return;
+	}
+	
+	/* $dismiss <kind> <tier> <qty> — on-demand troop dismiss.
+	 * Deliberately a command rather than a scheduled feature: the 2405
+	 * packet makes this server drop the session a couple of minutes
+	 * later, which is unacceptable in an unattended loop but is exactly
+	 * what you want when deliberately probing a short run. */
+	if (memcmp(message, "dismiss", 7) == 0 &&
+	    (message[7] == '\0' || message[7] == ' '))
+	{
+		CMD_REQUIRE_ADMIN();
+		char kind[16] = {0}, tier[16] = {0}, qty[24] = {0};
+		int got = sscanf(message + 7, "%15s %15s %23s", kind, tier, qty);
+		if (got != 3) {
+			RequestSendMail(c, player_name, "Dismiss",
+			                "Usage: $dismiss <infantry|ranged|"
+			                "cavalry|siege> <tier 1-4> <qty>");
+			return;
+		}
+		int k = -1;
+		if (!strcmp(kind, "infantry")) k = 0;
+		else if (!strcmp(kind, "ranged")) k = 1;
+		else if (!strcmp(kind, "cavalry")) k = 2;
+		else if (!strcmp(kind, "siege")) k = 3;
+		if (k < 0) {
+			RequestSendMail(c, player_name, "Dismiss", "Unknown kind.");
+			return;
+		}
+		int t = (int)strtol(tier, NULL, 10);
+		uint32_t n = (uint32_t)strtoul(qty, NULL, 0);
+		if (t < 1 || t > 4 || n == 0) {
+			RequestSendMail(c, player_name, "Dismiss",
+			                "Tier must be 1-4 and qty > 0.");
+			return;
+		}
+		RequestTroopDismiss(c, (uint8_t)k, (uint8_t)t, n);
+		RequestSendMail(c, player_name, "Dismiss sent",
+		                "See bot log for the server response.");
 		return;
 	}
 	

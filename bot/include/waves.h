@@ -105,6 +105,8 @@ void WaveRecvGambleInfo(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvMonopolyInfo(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvMonopolyStep(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvArenaPrize(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTroopDismiss(Connection *c, const uint8_t *data, uint16_t size);
+void GatherSetRegatherCooldown(uint32_t seconds);
 void WaveRecvGambleStart(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGamblePrize(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvGambleUpdateInfo(Connection *c, const uint8_t *data,

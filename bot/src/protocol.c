@@ -320,6 +320,37 @@ void RequestSmartUseBlackMarketBuy(Connection *c, SmartUseList smart_use, uint8_
     send_packet(c, true);
 }
 
+/* Dismiss troops (2405).
+ *
+ * CONFIRMED against the decompiled client (UIBarrack_Soldier, the
+ * disband panel):
+ *     seq | u8 kind | u8 (tier - 1) | u32 quantity    (unencrypted)
+ *
+ * Why this matters: an over-trained surplus does not sit safely in the
+ * barracks, it becomes dead or wounded troops on the first real hit.
+ * Dismissing down to a sustainable ceiling keeps the army inside what
+ * the shelter and infirmary can actually absorb.
+ */
+void RequestTroopDismiss(Connection *c, uint8_t kind, uint8_t tier,
+                         uint32_t qty)
+{
+	if (kind > 3 || qty == 0)
+		return;
+
+	c->size = 2;
+
+	write_u16(c->data + c->size, _MSG_REQUEST_TROOPDISMISS);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);
+	c->size += 4;
+	write_u8 (c->data + c->size, kind);                 c->size += 1;
+	write_u8 (c->data + c->size, (uint8_t)(tier - 1));  c->size += 1;
+	write_u32(c->data + c->size, qty);                  c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, false);
+}
+
 void RequestTroopTraining(Connection *c, uint8_t kind, uint8_t tier, uint32_t amount) {
 	c->size = 2; // reserve space for packet length
 	

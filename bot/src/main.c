@@ -152,6 +152,7 @@ void BotTick(Connection *c)
 	
 	/* Wave A automations */
 	TrainingTick(c);
+	DismissTick(c);
 	SpeedupTick(c);
 	
 	/* Wave B/C/D automations */
@@ -749,6 +750,10 @@ void ProcessConnection(Connection *c)
 				case _MSG_RESP_FINISHTRAINING:
 					WaveRecvFinishTraining(c, s->buffer + s->parse_pos + 4,
 					                       s->packet_size - 4);
+					break;
+				case _MSG_RESP_TROOPDISMISS:
+					WaveRecvTroopDismiss(c, s->buffer + s->parse_pos + 4,
+					                     s->packet_size - 4);
 					break;
 				case _MSG_RESP_TRAPINFO:
 					WaveRecvTrapInfo(c, s->buffer + s->parse_pos + 4,
