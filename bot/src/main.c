@@ -525,8 +525,24 @@ void ProcessConnection(Connection *c)
 						s->buffer + s->parse_pos + 4, s->packet_size - 4);
 					break;
 				case _MSG_RESP_TROOPMARCH:
-					WaveRecvDump(c, "TROOPMARCH_RESP",
-						s->buffer + s->parse_pos + 4, s->packet_size - 4);
+					WaveRecvTroopMarch(c, s->buffer + s->parse_pos + 4,
+					                   s->packet_size - 4);
+					break;
+				case _MSG_RESP_TROOPRETURN:
+					WaveRecvTroopReturn(c, s->buffer + s->parse_pos + 4,
+					                    s->packet_size - 4);
+					break;
+				case _MSG_RESP_TROOPHOME:
+					WaveRecvTroopHome(c, s->buffer + s->parse_pos + 4,
+					                  s->packet_size - 4);
+					break;
+				case _MSG_RESP_GATHERINGEVENT:
+					WaveRecvGatheringEvent(c, s->buffer + s->parse_pos + 4,
+					                       s->packet_size - 4);
+					break;
+				case _MSG_RESP_GATHERREPORTINFO:
+					WaveRecvGatherReport(c, s->buffer + s->parse_pos + 4,
+					                     s->packet_size - 4);
 					break;
 				case _MSG_RESP_SENDSCOUT:
 					WaveRecvDump(c, "SENDSCOUT_RESP",
@@ -564,6 +580,26 @@ void ProcessConnection(Connection *c)
 					WaveRecvDump(c, "SENDMONSTER_RESP",
 						s->buffer + s->parse_pos + 4, s->packet_size - 4);
 					break;
+				case _MSG_RESP_TRAININGINFO_:
+					WaveRecvTrainingInfo(c, s->buffer + s->parse_pos + 4,
+					                     s->packet_size - 4);
+					break;
+				case _MSG_RESP_TRAINING_:
+					WaveRecvTrainingResp(c, s->buffer + s->parse_pos + 4,
+					                     s->packet_size - 4);
+					break;
+				case _MSG_RESP_ADDSOLDIER_:
+					WaveRecvAddSoldier(c, s->buffer + s->parse_pos + 4,
+					                    s->packet_size - 4);
+					break;
+				case _MSG_RESP_TRAINING_IMMEDIATELY:
+					WaveRecvDump(c, "TRAIN_IMMEDIATELY_RESP",
+						s->buffer + s->parse_pos + 4, s->packet_size - 4);
+					break;
+				case _MSG_RESP_FINISHTRAINING:
+					WaveRecvFinishTraining(c, s->buffer + s->parse_pos + 4,
+					                       s->packet_size - 4);
+					break;
 				case _MSG_RESP_TRAPINFO:
 					WaveRecvTrapInfo(c, s->buffer + s->parse_pos + 4,
 					                 s->packet_size - 4);
@@ -573,7 +609,8 @@ void ProcessConnection(Connection *c)
 					                s->packet_size - 4);
 					break;
 				case _MSG_RESP_UPDATE_MAPINFO:
-					WaveRecvMapUpdate(c, s->buffer + s->parse_pos + 4,
+					WaveRecvMapUpdate(c, _MSG_RESP_UPDATE_MAPINFO,
+					                  s->buffer + s->parse_pos + 4,
 					                  s->packet_size - 4);
 					break;
 				/* ---- Wave E: guild fest ---- */
@@ -643,6 +680,26 @@ void ProcessConnection(Connection *c)
 					WaveRecvDump(c, "BATTLE_CLEARINIT",
 						s->buffer + s->parse_pos + 4,
 						s->packet_size - 4);
+					break;
+				/* ---- Wave F: heal / heroes / march results ---- */
+				case _MSG_RESP_HEALINGTROOP:
+					WaveRecvHealingTroop(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_HEALINGCOMPLETE:
+					WaveRecvHealingComplete(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_HEROSAVE:
+					WaveRecvHeroSave(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_INIT_HITMONSTER_EVENT:
+					WaveRecvMarchNotAtk(c, s->buffer + s->parse_pos + 4,
+					                    s->packet_size - 4);
 					break;
 				default:
 					if (c->wave.log_packets) {

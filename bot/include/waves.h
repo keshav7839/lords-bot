@@ -59,7 +59,23 @@ void WaveRecvShelterData(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvTrapInfo(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvTrapConstruct(Connection *c, const uint8_t *data, uint16_t size);
 void WaveRecvPetList(Connection *c, const uint8_t *data, uint16_t size);
-void WaveRecvMapUpdate(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvMapUpdate(Connection *c, uint16_t opcode, const uint8_t *data, uint16_t size);
+
+/* Wave F: hospital heal + hero roster (1201/2427/2428). */
+void WaveRecvHealingTroop(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTrainingResp(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvAddSoldier(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTrainingInfo(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvMarchNotAtk(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvFinishTraining(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTroopMarch(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTroopReturn(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvTroopHome(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvGatheringEvent(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvGatherReport(Connection *c, const uint8_t *data, uint16_t size);
+void WaveRecvHealingComplete(Connection *c, const uint8_t *data,
+                             uint16_t size);
+void WaveRecvHeroSave(Connection *c, const uint8_t *data, uint16_t size);
 
 /* Wave E: guild fest (ALLIANCEMOBILIZATION 3632..3644). */
 void WaveRecvGuildFestData(Connection *c, const uint8_t *data, uint16_t size);

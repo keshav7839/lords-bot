@@ -26,6 +26,11 @@ void TrainingTick(Connection *c)
 	if (c->server_time == 0)
 		return;
 
+	/* Pre-login requests get err=1 from the server — wait for the
+	 * role info so the account name is known. */
+	if (c->player.name[0] == '\0')
+		return;
+
 	time_t now = time(NULL);
 	uint32_t interval = c->train.interval_s ? c->train.interval_s : 120;
 
@@ -35,6 +40,22 @@ void TrainingTick(Connection *c)
 
 	if (g_train_last && (now - g_train_last) < (time_t)interval)
 		return;
+
+	/* Queue still cooking — don't hammer the server with starts that
+	 * it answers err=1. Re-arm after the server timer (+60s grace),
+	 * or after a fixed window if the timer is unknown (login seed).
+	 * A generous window also self-heals a lost ADDSOLDIER push. */
+	if (c->train.pending_qty > 0 && c->train.pending_since > 0) {
+		int64_t wait = c->train.instant_finish ? 120 :
+		               (c->train.pending_need > 0 ?
+		                (int64_t)c->train.pending_need + 60 : 900);
+		if (now < c->train.pending_since + wait)
+			return;
+		LOGI("[TRAIN] pending %u x kind=%u overdue (need=%us) — "
+		     "re-arming\n",
+		     c->train.pending_qty, c->train.pending_kind,
+		     c->train.pending_need);
+	}
 
 	g_train_last = now;
 

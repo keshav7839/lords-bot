@@ -531,6 +531,9 @@ typedef struct {
  * 96B→T1-6 (future). Trailing tier slots stay 0 until server sends. */
 #define TROOP_MAX_TIERS 6
 
+/* Hero roster ids (HEROSAVE 1201) — used for march packets. */
+#define WAVE_HERO_MAX 48
+
 typedef struct {
 	bool loaded;
 	uint8_t tiers;           /* 4..6 — highest tier block received     */
@@ -548,6 +551,18 @@ typedef struct {
 	long num;
 	uint total_time;
 } WoundedTroopData;
+
+/* Tile from UPDATE_MAPINFO (2203/2220): 51-byte record,
+ * header = 15 bytes (u8 type + 4xu16 + u16 0x3c33). */
+#define MAP_TILE_MAX 200
+typedef struct {
+	uint16_t zone;
+	uint8_t  point;
+	uint8_t  kind;      /* POINT_KIND: 1 food 2 stone 3 ore 4 wood
+	                      * 5 gold 6 crystal 7 sp 8 city 9 camp 10 npc */
+	uint8_t  level;
+	uint32_t amount;    /* resource count (kinds 1..7) */
+} MapTile;
 
 
 
@@ -673,6 +688,16 @@ typedef struct {
 	uint8_t  tier;       /* 0 = T1 ... 4 = T5 */
 	uint32_t amount;
 	uint16_t interval_s;
+	/* Accepted queue awaiting ADDSOLDIER (bot-local accounting until
+	 * the server pushes an ARMYGROUP update). */
+	uint8_t  pending_kind;
+	uint8_t  pending_tier;
+	uint32_t pending_qty;
+	uint32_t pending_need;   /* server timer seconds from 2408 (0 = unknown) */
+	int64_t  pending_since;  /* local epoch when the queue was accepted */
+	/* Chain FINISHTRAINING (2407) after every accepted queue —
+	 * server-side instant completion (private server allows it). */
+	bool     instant_finish;
 } TrainSettings;
 
 /* Wave A: automatic speed-up usage (beta) */
@@ -726,6 +751,18 @@ typedef struct {
 	uint8_t  labyrinth_mode;             /* 0 Turbo (elite), 1 Normal. */
 	bool     labyrinth_spend;            /* Spend Holy Stars (free-only else). */
 	bool     stage_sweep;                /* Hero stage quick-battle (BETA). */
+
+	/* --- Wave F: hospital auto-heal (HEALINGTROOP 2426). */
+	bool     heal_troops;                /* Heal wounded when hospital idle. */
+	uint8_t  heal_style;                 /* 0 = full slot array (HOSPITALINFO
+	                                      *    mirror), 1 = kind/tier/qty,
+	                                      *    2 = seq-only probe. */
+
+	/* --- Wave F: gather / hunt action cadence. */
+	uint16_t gather_interval_s;          /* Min seconds between marches. */
+	uint32_t gather_min_amount;          /* Skip resource tiles below this. */
+	uint16_t gather_max_dist;            /* Max tile distance from home. */
+	uint8_t  hunt_min_level;             /* Only hunt monsters at/above. */
 
 	/* --- debug --- */
 	bool     log_packets;                /* Log every received packet type. */
@@ -967,8 +1004,17 @@ typedef struct {
 	HyperSettings hyper;
 	
 	TroopData troop;
-	
+
+	/* Hero roster from HEROSAVE (1201): u16 ids in save order. */
+	uint16_t hero_id[WAVE_HERO_MAX];
+	uint8_t  hero_count;
+
 	WoundedTroopData wounded;
+
+	/* Map tiles seen via UPDATE_MAPINFO (gather/hunt targets). */
+	MapTile map_tiles[MAP_TILE_MAX];
+	uint16_t map_tile_count;
+	uint16_t map_tile_updates;
 	
 	ProtectionSettings protection;
 	

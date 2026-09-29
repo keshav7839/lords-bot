@@ -345,6 +345,140 @@ void CancelTroopTraining(Connection *c)
 	send_packet(c, true);
 }
 
+/* ------------------------------------------------------------------ */
+/* Wave C/F: march + hospital senders                                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * HEALINGTROOP (2426) — start healing wounded.
+ * The C# sender (UIHospital) is not in the decompiled references, so
+ * wave.heal_style selects one of three candidate layouts, validated
+ * live against RESP_HEALINGTROOP (2427): err==0 (body echoes start/
+ * treatment) marks the winning style, any other err byte logs raw.
+ *   0 = 4 kinds x tiers u32 wounded counts (HOSPITALINFO array mirror)
+ *   1 = u8 kind + u8 tier + u32 qty (TRAINING-style triple)
+ *   2 = seq only (empty-payload probe)
+ */
+void RequestHealTroops(Connection *c, uint8_t style)
+{
+	const uint32_t *kinds[4] = {
+		c->wounded.troop.infantry, c->wounded.troop.ranged,
+		c->wounded.troop.cavalry,  c->wounded.troop.siege
+	};
+	uint8_t tiers = c->wounded.troop.tiers;
+	if (tiers < 4) tiers = 4;
+	if (tiers > 4) tiers = 4;   /* hospital block is 16 slots (T1..T4) */
+
+	c->size = 2;
+	write_u16(c->data + c->size, _MSG_REQUEST_HEALINGTROOP); c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);      c->size += 4;
+
+	if (style == 0) {
+		for (int k = 0; k < 4; k++)
+			for (int t = 0; t < tiers; t++) {
+				write_u32(c->data + c->size, kinds[k][t]);
+				c->size += 4;
+			}
+	} else if (style == 1) {
+		write_u8(c->data + c->size, 0); c->size += 1;  /* kind: infantry */
+		write_u8(c->data + c->size, 0); c->size += 1;  /* tier: T1 (0-based) */
+		write_u32(c->data + c->size, kinds[0][0]); c->size += 4;  /* real T1 inf wounded */
+	}
+	/* style 2: seq only */
+
+	write_u16(c->data, c->size);
+	send_packet(c, true);
+}
+
+/*
+ * TROOPMARCH_NOTATK (6615) — gather / support march.
+ * Body per decompiled UIExpedition.SendExpedition (mOpenKind 11/12):
+ *   seq + 5xu16 hero ids + 16xu32 troops + u16 zone + u8 point
+ * Troops follow pLeftTroopForce[kind][tier]: kind-major (inf, rng,
+ * cav, seg), tier ascending (T1 first) — matches the 2401 receive
+ * convention documented in connection.h. Heroes default to 0
+ * (gathering does not require them).
+ */
+void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point)
+{
+	const uint32_t *kinds[4] = {
+		c->troop.infantry, c->troop.ranged,
+		c->troop.cavalry, c->troop.siege
+	};
+	uint8_t tiers = c->troop.tiers;
+	if (tiers < 4) tiers = 4;
+	if (tiers > 4) tiers = 4;   /* wire carries T1..T4 only */
+
+	c->size = 2;
+	write_u16(c->data + c->size, _MSG_REQUEST_TROOPMARCH_NOTATK);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id); c->size += 4;
+
+	for (int h = 0; h < 5; h++) {           /* hero ids */
+		write_u16(c->data + c->size, 0); c->size += 2;
+	}
+	for (int k = 0; k < 4; k++)             /* 16 troop counts */
+		for (int t = 0; t < tiers; t++) {
+			write_u32(c->data + c->size, kinds[k][t]);
+			c->size += 4;
+		}
+	write_u16(c->data + c->size, zone); c->size += 2;
+	write_u8 (c->data + c->size, point); c->size += 1;
+
+	write_u16(c->data, c->size);
+	send_packet(c, true);
+	c->player.current_marches++;   /* optimistic; server pushes correct */
+}
+
+/*
+ * SENDMONSTER (2488) — monster hunt march.
+ * Body per decompiled UIBattleHeroSelect:
+ *   seq + u16 zone + u8 point + u8 attack_times + 5xu16 hero ids
+ * Heroes come from the HEROSAVE roster (top ids); zero until parsed.
+ */
+void RequestHuntMarch(Connection *c, uint16_t zone, uint8_t point,
+                      uint8_t attack_times)
+{
+	c->size = 2;
+	write_u16(c->data + c->size, _MSG_REQUEST_SENDMONSTER); c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id);     c->size += 4;
+
+	write_u16(c->data + c->size, zone); c->size += 2;
+	write_u8 (c->data + c->size, point); c->size += 1;
+	write_u8 (c->data + c->size, attack_times); c->size += 1;
+
+	int sent = 0;
+	for (int h = 0; h < c->hero_count && sent < 5; h++) {
+		if (c->hero_id[h] == 0)
+			continue;
+		write_u16(c->data + c->size, c->hero_id[h]); c->size += 2;
+		sent++;
+	}
+	for (; sent < 5; sent++) {              /* pad to 5 slots */
+		write_u16(c->data + c->size, 0); c->size += 2;
+	}
+
+	write_u16(c->data, c->size);
+	send_packet(c, true);
+	c->player.current_marches++;   /* optimistic; server pushes correct */
+}
+
+/*
+ * FINISHTRAINING (2407) — official SendFinishtraining: seq only.
+ * Finishes the active training queue instantly (validated live:
+ * err=0, soldiers delivered in the same resp).
+ */
+void RequestFinishTraining(Connection *c)
+{
+	c->size = 2;
+	write_u16(c->data + c->size, _MSG_REQUEST_FINISHTRAINING);
+	c->size += 2;
+	write_u32(c->data + c->size, ++c->protocol.seq_id); c->size += 4;
+
+	write_u16(c->data, c->size);
+	send_packet(c, true);
+}
+
 typedef struct {
 	uint32_t food;
 	uint32_t rock;
@@ -3223,6 +3357,14 @@ void RecvWoundedTroopData(Connection *c, const uint8_t *data, uint16_t size) {
 	c->wounded.troop.tiers = tiers;
 	c->wounded.healing.tiers = tiers;
 	c->wounded.loaded = true;
+	LOGI("[HOSPITAL] wounded total=%u healing=%u num=%llu t=%u\n",
+	     c->wounded.troop.total, c->wounded.healing.total,
+	     (unsigned long long)c->wounded.num, c->wounded.total_time);
+	LOGI("[HOSPITAL]  inf: %u %u %u %u %u | rng: %u %u %u %u %u | cav: %u %u %u %u %u | seg: %u %u %u %u %u\n",
+	     c->wounded.troop.infantry[0], c->wounded.troop.infantry[1], c->wounded.troop.infantry[2], c->wounded.troop.infantry[3], c->wounded.troop.infantry[4],
+	     c->wounded.troop.ranged[0], c->wounded.troop.ranged[1], c->wounded.troop.ranged[2], c->wounded.troop.ranged[3], c->wounded.troop.ranged[4],
+	     c->wounded.troop.cavalry[0], c->wounded.troop.cavalry[1], c->wounded.troop.cavalry[2], c->wounded.troop.cavalry[3], c->wounded.troop.cavalry[4],
+	     c->wounded.troop.siege[0], c->wounded.troop.siege[1], c->wounded.troop.siege[2], c->wounded.troop.siege[3], c->wounded.troop.siege[4]);
 }
 
 
@@ -4171,7 +4313,7 @@ void RecvMapInfoPlus(Connection *c, const uint8_t *data, uint16_t size) {
 	(void)offset;
 	
 	/* Wave C: learning dump — tile layouts parsed from this. */
-	WaveRecvMapUpdate(c, data, size);
+	WaveRecvMapUpdate(c, _MSG_RESP_UPDATE_MAPINFO_PLUS, data, size);
 }
 
 

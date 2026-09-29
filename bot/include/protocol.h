@@ -10,6 +10,11 @@ void RequestClientInitOver(Connection *conn);
 void RequestHeartBeat(Connection *conn);
 
 void RequestTroopTraining(Connection *c, uint8_t kind, uint8_t tier, uint32_t amount);
+void RequestFinishTraining(Connection *c);
+void RequestHealTroops(Connection *c, uint8_t style);
+void RequestGatherMarch(Connection *c, uint16_t zone, uint8_t point);
+void RequestHuntMarch(Connection *c, uint16_t zone, uint8_t point,
+                      uint8_t attack_times);
 
 void RequestTroopRecall(Connection *c, uint8_t Index);
 void RequestViewChat(Connection *c, uint8_t channel, uint8_t prev, int8_t kind, int64_t DataID, int64_t DataTime);

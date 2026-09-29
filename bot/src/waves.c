@@ -21,6 +21,7 @@
 #include "log.h"
 #include "items.h"
 #include "tech_research.h"
+#include "map_point.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1123,15 +1124,629 @@ static void PetTick(Connection *c)
 }
 
 /* ------------------------------------------------------------------ */
-/* Wave C: map scanning (gather / monster hunt learning mode)          */
+/* Wave F: hospital auto-heal (HEALINGTROOP 2426 -> RESP 2427)         */
+/*                                                                      */
+/* HOSPITALINFO (2425) arrives silently at login and fills             */
+/* c->wounded (block 1 = hospital slot counts, block 2 = in-treatment, */
+/* + num/total_time).  While wounded exist and no heal is running,    */
+/* send a heal request; payload style is selectable (RequestHealTroops)*/
+/* because the C# sender is not in our references — 2427 responses    */
+/* are dumped raw so err==0 (accepted) validates the style.           */
+/* ------------------------------------------------------------------ */
+
+static time_t g_heal_last = 0;
+
+void WaveRecvHealingTroop(Connection *c, const uint8_t *data, uint16_t size)
+{
+	(void)c;
+	if (size == 0) {
+		LOGI("[HEAL] empty response\n");
+		return;
+	}
+	uint8_t err = data[0];
+	if (err == 0) {
+		LOGI("[HEAL] accepted — err=0 len=%u\n", size);
+		HexPreview("HEAL_OK", data, size, 96);
+	} else {
+		LOGI("[HEAL] rejected — err=%u len=%u\n", err, size);
+		HexPreview("HEAL_REJ", data, size, 96);
+	}
+}
+
+void WaveRecvHealingComplete(Connection *c, const uint8_t *data,
+                             uint16_t size)
+{
+	(void)c;
+	/* Heal finished (2428) — HealTick re-arms on its own once the
+	 * in-treatment block clears; just log the push. */
+	HexPreview("HEAL_DONE", data, size, 64);
+}
+
+static void HealTick(Connection *c)
+{
+	if (!c->wave.heal_troops)
+		return;
+	if (c->server_time == 0)
+		return;
+	if (!c->wounded.loaded)
+		return;
+	if (c->wounded.troop.total == 0)
+		return;
+	/* Already healing? */
+	if (c->wounded.healing.total > 0 || c->wounded.total_time > 0)
+		return;
+
+	time_t now = time(NULL);
+	if (g_heal_last && (now - g_heal_last) < 180)
+		return;
+	g_heal_last = now;
+
+	RequestHealTroops(c, c->wave.heal_style);
+	LOGI("[HEAL] healing %u (slots) — style=%u tiers=%u "
+	     "(watch 2427 err byte)\n",
+	     c->wounded.troop.total, c->wave.heal_style,
+	     c->wounded.troop.tiers);
+}
+
+/* ------------------------------------------------------------------ */
+/* Wave F: hero roster (HEROSAVE 1201)                                 */
+/*                                                                      */
+/* C# RecvHeroSave: i64 unk | i16 count | count x { u16 id, u8 level,  */
+/* u32 exp, u8 enhance, u8 star, u8 equip, 6xu8 enchant, 4xu8 skill }  */
+/* (20 B/record in 1.80; later clients grew the record — we derive     */
+/* the stride from the payload so both layouts parse).                 */
+/* ------------------------------------------------------------------ */
+
+void WaveRecvHeroSave(Connection *c, const uint8_t *data, uint16_t size)
+{
+	if (size < 10) {
+		HexPreview("HEROSAVE(short)", data, size, 64);
+		return;
+	}
+	int64_t count = read_i16(data + 8);
+	if (count <= 0 || size < 10) {
+		HexPreview("HEROSAVE", data, size, 96);
+		return;
+	}
+	uint16_t body = (uint16_t)(size - 10);
+	if (body % (uint16_t)count != 0) {
+		/* layout mismatch — keep raw for offline decode */
+		HexPreview("HEROSAVE(unparsed)", data, size, 320);
+		return;
+	}
+	uint16_t stride = body / (uint16_t)count;
+	if (stride < 20) {
+		HexPreview("HEROSAVE(short rec)", data, size, 320);
+		return;
+	}
+
+	c->hero_count = 0;
+	for (int64_t i = 0; i < count && c->hero_count < WAVE_HERO_MAX; i++) {
+		uint16_t id = read_u16(data + 10 + i * stride);
+		if (id != 0)
+			c->hero_id[c->hero_count++] = id;
+	}
+	LOGI("[HERO] roster parsed: %u heroes (count=%ld stride=%u)\n",
+	     c->hero_count, (long)count, stride);
+}
+
+/* ------------------------------------------------------------------ */
+/* Training accounting: TRAINING_ (2408) accepted queue + ADDSOLDIER   */
+/* (2409) soldiers delivered.  Live shapes (2026-09-28):               */
+/*   2408 accepted: u8 err=0 | u8 kind | u8 tier | u32 qty |           */
+/*                  5xu32 resources | i64 start | u32 total  (39/43B)  */
+/*   2408 busy/rej: u8 err!=0 (1B or 5B)                               */
+/*   2409:          u8 err=0 | u8 kind | u32 qty | 3xu32  (18B) —      */
+/*                  tier absent; taken from the pending queue          */
+/*   2402 info:     u8 err=0 | u8 kind | u32 qty | i64 start |         */
+/*                  u32 total (18B) — seeds the pending queue at login */
+/* ------------------------------------------------------------------ */
+
+static void CreditSoldiers(Connection *c, uint8_t kind, uint8_t rank,
+                           uint32_t qty, const char *why);
+
+void WaveRecvTrainingResp(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("TRAINING_RESP", data, size, 64);
+	if (size == 0)
+		return;
+	if (data[0] != 0) {
+		LOGI("[TRAIN] rejected (err=%u) size=%u\n", data[0], size);
+		return;
+	}
+	if (size >= 7) {
+		c->train.pending_kind = data[1];
+		c->train.pending_tier = data[2];
+		c->train.pending_qty  = read_u32(data + 3);
+		/* Wire layout (39B): ... i64 begin @27, u32 need @35. */
+		c->train.pending_need = size >= 39 ? read_u32(data + 35) : 0;
+		c->train.pending_since = (int64_t)time(NULL);
+		LOGI("[TRAIN] queue accepted: %u x kind=%u tier=%u need=%us "
+		     "(awaiting ADDSOLDIER)\n",
+		     c->train.pending_qty, c->train.pending_kind,
+		     c->train.pending_tier, c->train.pending_need);
+		if (c->train.instant_finish) {
+			RequestFinishTraining(c);
+			LOGI("[TRAIN] instant finish requested (2407)\n");
+		}
+	}
+}
+
+void WaveRecvTrainingInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("TRAININGINFO_RESP", data, size, 32);
+	if (size < 6 || data[0] != 0)
+		return;
+	uint32_t qty = read_u32(data + 2);
+	/* Mid-queue reconnect: seed pending from the active batch (tier
+	 * is not in this push — default T1, correct for our config). */
+	if (c->train.pending_qty == 0 && qty > 0 && qty <= 100000) {
+		c->train.pending_kind = data[1];
+		c->train.pending_tier = 0;
+		c->train.pending_qty  = qty;
+		c->train.pending_need = 0;
+		c->train.pending_since = (int64_t)time(NULL);
+		LOGI("[TRAIN] active queue from info: %u x kind=%u "
+		     "(awaiting ADDSOLDIER)\n", qty, data[1]);
+	}
+}
+
+void WaveRecvAddSoldier(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("ADDSOLDIER", data, size, 48);
+	if (size < 6) {
+		LOGI("[TRAIN] ADDSOLDIER short size=%u\n", size);
+		return;
+	}
+	/* Official RecvAddSoldier: NO err byte — kind, rank, qty. */
+	uint8_t kind = data[0];
+	uint8_t rank = data[1];
+	uint32_t qty = read_u32(data + 2);
+	if (c->train.pending_qty && qty == c->train.pending_qty) {
+		c->train.pending_qty = 0;
+		CreditSoldiers(c, kind, rank, qty, "delivered");
+	} else {
+		/* No pending match — credit the total so the gather gate
+		 * sees the army; next ARMYYROUP/TROOPHOME push resyncs. */
+		CreditSoldiers(c, kind, rank, qty, "delivered(untracked)");
+	}
+}
+
+/* TROOPMARCH_NOTATK resp (6616) — semantics learned live. */
+void WaveRecvMarchNotAtk(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("MARCH_NOTATK_RESP", data, size, 64);
+	if (size == 0)
+		return;
+	if (data[0] != 0) {
+		LOGI("[GATHER] march rejected (err=%u) size=%u\n",
+		     data[0], size);
+		if (c->player.current_marches > 0)
+			c->player.current_marches--;
+	} else {
+		LOGI("[GATHER] march accepted (size=%u, marches=%u/%u)\n",
+		     size, c->player.current_marches, c->player.max_marches);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* March lifecycle (official DataManager.cs parses, live-verified):    */
+/*   2407 FINISH resp: err | u32 diamonds | u8 kind | u8 rank |        */
+/*        u32 qty | u32 foodStock | i64 (23B) — delivers soldiers here */
+/*   2409 ADDSOLDIER: u8 kind | u8 rank | u32 qty | u32 food | i64     */
+/*        (18B, NO err byte — kind 0..3)                               */
+/*   2416 TROOPMARCH resp: err(0=ok slot/type/heroes/troops/dest...)   */
+/*        or err 1..8 reject codes (1 = march limit)                   */
+/*   2418 TROOPRETURN: slot u8 | type u8 | begin i64 | need u32        */
+/*   2419 TROOPHOME: slot u8 | 16..20xu32 home army | 5xu32 stocks     */
+/*   2421 GATHERINGEVENT: slot u8 | begin i64 | need u32 | overload u32 */
+/* ------------------------------------------------------------------ */
+
+static void CreditSoldiers(Connection *c, uint8_t kind, uint8_t rank,
+                           uint32_t qty, const char *why)
+{
+	uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
+	                     c->troop.cavalry, c->troop.siege };
+	if (kind < 4 && rank < TROOP_MAX_TIERS)
+		arr[kind][rank] += qty;
+	if (kind < 4 && c->troop.tiers < rank + 1)
+		c->troop.tiers = rank + 1;
+	c->troop.total += qty;
+	LOGI("[TRAIN] %s +%u T%u kind=%u -> total=%u\n",
+	     why, qty, rank + 1, kind, c->troop.total);
+}
+
+void WaveRecvFinishTraining(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("FINISH_TRAINING", data, size, 48);
+	if (size == 0)
+		return;
+	if (data[0] != 0) {
+		LOGI("[TRAIN] finish rejected (err=%u) size=%u\n",
+		     data[0], size);
+		return;
+	}
+	if (size < 11) {
+		LOGI("[TRAIN] finish short size=%u\n", size);
+		return;
+	}
+	uint8_t kind = data[5], rank = data[6];
+	uint32_t qty = read_u32(data + 7);
+	CreditSoldiers(c, kind, rank, qty, "finished");
+	if (c->train.pending_qty == qty)
+		c->train.pending_qty = 0;
+}
+
+void WaveRecvTroopMarch(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("TROOPMARCH_RESP", data, size, 128);
+	if (size == 0)
+		return;
+	if (data[0] == 0) {
+		/* Official RecvTroopMarch: err | slot | type | 5xu16 heroes
+		 * | 16xu32 troops (kind-major x4 tiers) | dest ... — the
+		 * marching troops leave the home army (TROOPHOME resyncs). */
+		if (size >= 77) {
+			uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
+			                     c->troop.cavalry, c->troop.siege };
+			uint32_t out = 0;
+			for (int k = 0; k < 4; k++)
+				for (int t = 0; t < 4; t++) {
+					uint32_t v = read_u32(data + 13 +
+					                       (k * 4 + t) * 4);
+					out += v;
+					if (arr[k][t] >= v)
+						arr[k][t] -= v;
+					else
+						arr[k][t] = 0;
+				}
+			if (c->troop.total >= out)
+				c->troop.total -= out;
+			else
+				c->troop.total = 0;
+			LOGI("[MARCH] accepted slot=%u troops_out=%u -> "
+			     "home=%u (marches=%u/%u)\n",
+			     data[1], out, c->troop.total,
+			     c->player.current_marches, c->player.max_marches);
+		} else {
+			LOGI("[MARCH] accepted slot=%u (marches=%u/%u)\n",
+			     data[1], c->player.current_marches,
+			     c->player.max_marches);
+		}
+	} else {
+		static const char *why[] = { "", "march limit", "busy",
+			"invalid target", "err4", "err5", "err6", "err7",
+			"yolk zone" };
+		const char *w = data[0] < 9 ? why[data[0]] : "?";
+		LOGI("[MARCH] rejected err=%u (%s)\n", data[0], w);
+		if (c->player.current_marches > 0)
+			c->player.current_marches--;
+	}
+}
+
+void WaveRecvTroopReturn(Connection *c, const uint8_t *data, uint16_t size)
+{
+	if (size >= 14) {
+		uint8_t slot = data[0], type = data[1];
+		int64_t begin = read_i64(data + 2);
+		uint32_t need = read_u32(data + 10);
+		LOGI("[MARCH] slot=%u returning type=%u begin=%ld eta=%us\n",
+		     slot, type, (long)begin, need);
+	} else {
+		HexPreview("TROOPRETURN", data, size, 48);
+	}
+}
+
+/* slot u8 | 20xu32 home army (kind-major x5 tiers) | 5xu32 stocks = 101B.
+ * Authoritative resync of troops + resource stocks (incl. gathered). */
+void WaveRecvTroopHome(Connection *c, const uint8_t *data, uint16_t size)
+{
+	if (size < 101) {
+		HexPreview("TROOPHOME", data, size, 160);
+		if (c->player.current_marches > 0)
+			c->player.current_marches--;
+		return;
+	}
+	uint8_t slot = data[0];
+	uint32_t *arr[4] = { c->troop.infantry, c->troop.ranged,
+	                     c->troop.cavalry, c->troop.siege };
+	uint32_t total = 0;
+	for (int k = 0; k < 4; k++)
+		for (int t = 0; t < 5; t++) {
+			arr[k][t] = read_u32(data + 1 + (k * 5 + t) * 4);
+			total += arr[k][t];
+		}
+	c->troop.total = total;
+	c->troop.tiers = 5;
+	c->troop.loaded = true;
+
+	const uint8_t *st = data + 81;
+	c->resources.food = read_u32(st);
+	c->resources.rock = read_u32(st + 4);
+	c->resources.wood = read_u32(st + 8);
+	c->resources.ore  = read_u32(st + 12);
+	c->resources.gold = read_u32(st + 16);
+	c->resources_last_update = c->server_time;
+
+	if (c->player.current_marches > 0)
+		c->player.current_marches--;
+	LOGI("[MARCH] slot=%u home army=%u food=%u rock=%u wood=%u "
+	     "ore=%u gold=%u (marches=%u/%u)\n",
+	     slot, total, c->resources.food, c->resources.rock,
+	     c->resources.wood, c->resources.ore, c->resources.gold,
+	     c->player.current_marches, c->player.max_marches);
+}
+
+void WaveRecvGatheringEvent(Connection *c, const uint8_t *data, uint16_t size)
+{
+	HexPreview("GATHERINGEVENT", data, size, 48);
+	if (size < 13) {
+		LOGI("[GATHER] event short size=%u\n", size);
+		return;
+	}
+	uint8_t slot = data[0];
+	if (slot >= 8) {
+		LOGI("[GATHER] event bad slot=%u\n", slot);
+		return;
+	}
+	int64_t begin = read_i64(data + 1);
+	uint32_t need = read_u32(data + 9);
+	LOGI("[GATHER] active slot=%u begin=%ld eta=%us\n",
+	     slot, (long)begin, need);
+}
+
+/* u32 id | u8 | i64 time | u16 kingdom | u16 zone | u8 point |
+ * u8 kind | u8 level | u32 amount | 5B  (29B observed) */
+void WaveRecvGatherReport(Connection *c, const uint8_t *data, uint16_t size)
+{
+	if (size >= 24) {
+		uint16_t zone = read_u16(data + 15);
+		uint8_t point = data[17];
+		uint8_t kind = data[18];
+		uint32_t amount = read_u32(data + 20);
+		LOGI("[GATHER] report zone=%u pt=0x%02x kind=%u amount=%u "
+		     "(size=%u)\n", zone, point, kind, amount, size);
+		/* Tile fully gathered — clear in-flight marker so the next
+		 * scan can re-evaluate it. */
+		for (uint16_t i = 0; i < c->map_tile_count; i++) {
+			MapTile *t = &c->map_tiles[i];
+			if (t->zone == zone && t->point == point)
+				t->amount = 0;
+		}
+	} else {
+		HexPreview("GATHERREPORT", data, size, 64);
+		LOGI("[GATHER] report size=%u\n", size);
+	}
+}
+
+/* ------------------------------------------------------------------ */
+/* Wave C: map scanning (gather / monster hunt)                        */
 /* ------------------------------------------------------------------ */
 
 static time_t g_scan_last = 0;
 
-void WaveRecvMapUpdate(Connection *c, const uint8_t *data, uint16_t size)
+/* UPDATE_MAPINFO wire (validated live: castle tile = our own
+ * K1447 X317 Y45 record):
+ *   15B header: u8 type | u16 A | u16 zone_hint | u16 B |
+ *               3xu16 0 | u16 0x3c33
+ *   N x 51B records: u16 zone | u8 point | u8 kind(POINT_KIND) |
+ *     kind 1..7 resource: pad.. | u8 level@body[18] | u32 amount@body[19]
+ *     kind 8/9 city/camp:  char name[16] | u16 kingdom | u8 level |
+ *     kind 10 npc/monster: u8 01 | u8 level | u8 00 | u16 id | ...
+ * POINT_KIND: 1 food 2 stone 3 ore 4 wood 5 gold 6 crystal 7 sp,
+ *             8 city 9 camp 10 npc (monster/darknest-ish). */
+void WaveRecvMapUpdate(Connection *c, uint16_t opcode,
+                       const uint8_t *data, uint16_t size)
 {
-	(void)c;
-	HexPreview("MAP_UPDATE", data, size, 48);
+	/* 15B header + N x 51B records, sometimes a trailing status
+	 * block (60B seen → remainder 9).  Bigger remainders are a
+	 * different packet shape — keep them raw. */
+	if (size < 15 || ((size - 15) % 51) > 16) {
+		LOGI("[MAP] size=%u op=%u not 15+51N — raw dump\n", size, opcode);
+		HexPreview("MAP_UPDATE", data, size, 640);
+		return;
+	}
+
+	uint16_t n = (size - 15) / 51;
+	uint16_t res = 0, npc = 0, city = 0, fresh = 0;
+	uint16_t trailer = 0;
+	const uint8_t *r = data + 15;
+
+	for (uint16_t i = 0; i < n; i++, r += 51) {
+		MapTile t;
+		t.zone   = read_u16(r);
+		t.point  = r[2];
+		t.kind   = r[3];
+		t.level  = 0;
+		t.amount = 0;
+
+		/* Zone-0 overview packets (pre-role scans) and the 60B
+		 * trailing status block land here — stop, don't store. */
+		if (t.zone == 0 || t.zone > 4096) {
+			trailer = (uint16_t)(size - (uint16_t)(r - data));
+			break;
+		}
+
+		const uint8_t *body = r + 4;
+		if (t.kind >= 1 && t.kind <= 7) {
+			t.level  = body[18];
+			t.amount = read_u32(body + 19);
+			res++;
+		} else if (t.kind == 8 || t.kind == 9) {
+			city++;
+		} else if (t.kind == 10) {
+			t.level = body[1];
+			npc++;
+		}
+
+		/* upsert by (zone, point) */
+		MapTile *slot = NULL;
+		for (uint16_t j = 0; j < c->map_tile_count; j++) {
+			if (c->map_tiles[j].zone == t.zone &&
+			    c->map_tiles[j].point == t.point) {
+				slot = &c->map_tiles[j];
+				break;
+			}
+		}
+		if (!slot) {
+			if (c->map_tile_count >= MAP_TILE_MAX)
+				continue;
+			slot = &c->map_tiles[c->map_tile_count++];
+			fresh++;
+		}
+		*slot = t;
+	}
+
+	c->map_tile_updates++;
+	LOGI("[MAP] +%u tiles (res=%u npc=%u city=%u trailer=%u) fresh=%u "
+	     "total=%u op=%u\n",
+	     n, res, npc, city, trailer, fresh, c->map_tile_count, opcode);
+}
+
+/* tile distance in map cells (x from getTileMapPosbyMapID) */
+static int TileDist(map_pos_t a, map_pos_t b)
+{
+	int dx = (int)a.x - (int)b.x;
+	int dy = (int)a.y - (int)b.y;
+	if (dx < 0) dx = -dx;
+	if (dy < 0) dy = -dy;
+	return dx > dy ? dx : dy;
+}
+
+static time_t g_gather_last = 0;
+static time_t g_hunt_last = 0;
+static time_t g_notroop_warn = 0;
+
+/* Pick a resource tile and march (TROOPMARCH_NOTATK 6615).
+ * Returns true when a march was sent (hunt defers to gather —
+ * both march the same army). */
+static bool GatherTick(Connection *c)
+{
+	if (!c->wave.gather_auto || c->server_time == 0)
+		return false;
+
+	time_t now = time(NULL);
+	uint32_t interval = c->wave.gather_interval_s ? c->wave.gather_interval_s
+	                                               : 60;
+	if (g_gather_last && (now - g_gather_last) < (time_t)interval)
+		return false;
+
+	if (c->troop.total == 0) {
+		if (!g_notroop_warn || (now - g_notroop_warn) > 600) {
+			g_notroop_warn = now;
+			LOGI("[GATHER] waiting: no troops trained\n");
+		}
+		return false;
+	}
+	if (c->map_tile_count == 0)
+		return false;
+	if (c->player.max_marches &&
+	    c->player.current_marches >= c->player.max_marches)
+		return false;
+
+	map_pos_t home = getTileMapPosbyPointCode(c->player.zone_id,
+	                                           c->player.point_id);
+	int best = -1;
+	uint32_t best_amt = 0;
+	int best_dist = 0;
+
+	for (uint16_t i = 0; i < c->map_tile_count; i++) {
+		MapTile *t = &c->map_tiles[i];
+		if (t->kind < 1 || t->kind > 7)
+			continue;
+		if (t->zone != c->player.zone_id)   /* same-zone only */
+			continue;
+		if (t->amount == 0)               /* empty or already marched */
+			continue;
+		uint32_t min_amt = c->wave.gather_min_amount;
+		if (min_amt && t->amount < min_amt)
+			continue;
+		map_pos_t p = getTileMapPosbyMapID(
+			PointCodeToMapID(t->zone, t->point));
+		int d = TileDist(home, p);
+		if (c->wave.gather_max_dist && d > (int)c->wave.gather_max_dist)
+			continue;
+		if (t->amount > best_amt) {
+			best_amt = t->amount;
+			best = i;
+			best_dist = d;
+		}
+	}
+	if (best < 0)
+		return false;
+
+	MapTile *t = &c->map_tiles[best];
+	g_gather_last = now;
+	RequestGatherMarch(c, t->zone, t->point);
+	LOGI("[GATHER] 6615 march -> zone=%u point=0x%02x kind=%u "
+	     "amount=%u dist=%d (BETA, watch MARCH_NOTATK_RESP)\n",
+	     t->zone, t->point, t->kind, t->amount, best_dist);
+	t->amount = 0;   /* in-flight marker until tile refresh */
+	return true;
+}
+
+/* Pick a monster tile and attack (SENDMONSTER 2488). */
+static void HuntTick(Connection *c)
+{
+	if (!c->wave.hunt_auto || c->server_time == 0)
+		return;
+
+	time_t now = time(NULL);
+	uint32_t interval = c->wave.gather_interval_s ? c->wave.gather_interval_s
+	                                               : 60;
+	if (g_hunt_last && (now - g_hunt_last) < (time_t)interval)
+		return;
+
+	if (c->troop.total == 0) {
+		if (!g_notroop_warn || (now - g_notroop_warn) > 600) {
+			g_notroop_warn = now;
+			LOGI("[HUNT] waiting: no troops trained\n");
+		}
+		return;
+	}
+	if (c->map_tile_count == 0)
+		return;
+	if (c->player.max_marches &&
+	    c->player.current_marches >= c->player.max_marches)
+		return;
+
+	map_pos_t home = getTileMapPosbyPointCode(c->player.zone_id,
+	                                           c->player.point_id);
+	int best = -1, best_level = -1, best_dist = 0;
+
+	for (uint16_t i = 0; i < c->map_tile_count; i++) {
+		MapTile *t = &c->map_tiles[i];
+		if (t->kind != 10)
+			continue;
+		if (t->zone != c->player.zone_id)   /* same-zone only */
+			continue;
+		if (t->amount)                    /* already marched */
+			continue;
+		if (c->wave.hunt_min_level && t->level < c->wave.hunt_min_level)
+			continue;
+		if (c->wave.hunt_max_level && t->level > c->wave.hunt_max_level)
+			continue;
+		map_pos_t p = getTileMapPosbyMapID(
+			PointCodeToMapID(t->zone, t->point));
+		int d = TileDist(home, p);
+		if (c->wave.gather_max_dist && d > (int)c->wave.gather_max_dist)
+			continue;
+		if (t->level > best_level) {
+			best_level = t->level;
+			best = i;
+			best_dist = d;
+		}
+	}
+	if (best < 0)
+		return;
+
+	MapTile *t = &c->map_tiles[best];
+	g_hunt_last = now;
+	RequestHuntMarch(c, t->zone, t->point, 1);
+	LOGI("[HUNT] 2488 attack -> zone=%u point=0x%02x level=%u "
+	     "dist=%d (BETA, watch SENDMONSTER_RESP)\n",
+	     t->zone, t->point, t->level, best_dist);
+	t->amount = 1;   /* in-flight marker until tile refresh */
 }
 
 static void MapScanTick(Connection *c)
@@ -1139,6 +1754,10 @@ static void MapScanTick(Connection *c)
 	if (!c->wave.gather_auto && !c->wave.hunt_auto)
 		return;
 	if (c->server_time == 0)
+		return;
+	/* Don't burn the scan interval (or ask for a zone-0 overview)
+	 * before role info gives us the real zone. */
+	if (c->player.zone_id == 0 || c->player.name[0] == '\0')
 		return;
 
 	time_t now = time(NULL);
@@ -1148,15 +1767,12 @@ static void MapScanTick(Connection *c)
 		return;
 	g_scan_last = now;
 
-	/* Request map data around home zone.  Responses
-	 * (UPDATE_MAPINFO / UPDATE_MAPINFO_PLUS) are logged so tile
-	 * layouts can be parsed; march sending (TROOPMARCH 2415 /
-	 * SENDMONSTER 2488) is wired after that. */
 	uint16_t zones[4] = { c->player.zone_id, 0, 0, 0 };
 	RequestMapData(c, 1, zones);
-	LOGI("[SCAN] map data requested for zone %u "
-	     "(gather=%d hunt=%d learning mode)\n",
-	     c->player.zone_id, c->wave.gather_auto, c->wave.hunt_auto);
+	LOGI("[SCAN] map data requested for zone %u (gather=%d hunt=%d, "
+	     "%u tiles known)\n",
+	     c->player.zone_id, c->wave.gather_auto, c->wave.hunt_auto,
+	     c->map_tile_count);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1821,6 +2437,8 @@ void WaveStatusMail(Connection *c, const char *player_name)
 		"D: trap=%s  pet=%s  rewards=%s (mask 0x%02X)\n"
 		"E: fest=%s avail=%u mission=%u st=%u | lab=%s %s "
 		"free=[%u,%u] stars=%s%u | sweep=%s\n"
+		"F: heal=%s style=%u slots=%u treat=%u | heroes=%u "
+		"marches=%u/%u\n"
 		"dbg: log_packets=%s\n"
 		"buildings=%u queue=%s research_tech=%u\n"
 		"army total=%u tiers=%u  wounded=%u\n"
@@ -1853,6 +2471,10 @@ void WaveStatusMail(Connection *c, const char *player_name)
 		g_lab.free_play[0], g_lab.free_play[1],
 		g_lab.stars_known ? "" : "?", g_lab.stars,
 		ST(c->wave.stage_sweep),
+		ST(c->wave.heal_troops), c->wave.heal_style,
+		c->wounded.troop.total, c->wounded.healing.total,
+		c->hero_count, c->player.current_marches,
+		c->player.max_marches,
 		ST(c->wave.log_packets),
 		c->building_count,
 		queue_idle(&c->build_queue, (int64_t)c->server_time)
@@ -1890,7 +2512,12 @@ void WaveTick(Connection *c)
 	RewardTick(c);
 	TrapTick(c);
 	PetTick(c);
+	HealTick(c);
 	MapScanTick(c);
+	if (GatherTick(c))
+		g_hunt_last = time(NULL);   /* army is out — defer hunt */
+	else
+		HuntTick(c);
 	GFestTick(c);
 	LabTick(c);
 	StageTick(c);

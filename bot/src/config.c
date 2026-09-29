@@ -395,6 +395,11 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
+	if (strcmp(key, "train.instant_finish") == 0) {
+		c->train.instant_finish = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
 	/* Wave A: automatic speed-ups (beta) */
 	if (strcmp(key, "speedup.enabled") == 0) {
 		c->speedup.enabled = (strcmp(value, "true") == 0);
@@ -555,6 +560,42 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 	
 	if (strcmp(key, "wave.stage_sweep") == 0) {
 		c->wave.stage_sweep = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.heal_troops") == 0) {
+		c->wave.heal_troops = (strcmp(value, "true") == 0);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.heal_style") == 0) {
+		c->wave.heal_style = (uint8_t)strtoul(value, NULL, 10);
+		if (c->wave.heal_style > 2)
+			c->wave.heal_style = 0;
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_interval_s") == 0) {
+		c->wave.gather_interval_s = (uint16_t)strtoul(value, NULL, 10);
+		if (c->wave.gather_interval_s < 30)
+			c->wave.gather_interval_s = 30;
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_min_amount") == 0) {
+		c->wave.gather_min_amount = (uint32_t)strtoul(value, NULL, 10);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.gather_max_dist") == 0) {
+		c->wave.gather_max_dist = (uint16_t)strtoul(value, NULL, 10);
+		return true;
+	}
+	
+	if (strcmp(key, "wave.hunt_min_level") == 0) {
+		c->wave.hunt_min_level = (uint8_t)strtoul(value, NULL, 10);
+		if (c->wave.hunt_min_level > 99)
+			c->wave.hunt_min_level = 99;
 		return true;
 	}
 	
