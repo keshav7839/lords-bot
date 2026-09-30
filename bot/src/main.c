@@ -62,6 +62,13 @@ void BotTick(Connection *c)
 	
 	/* Deferred post-login data requests.
 	 *
+	 * 2001 BUILDINGINFO IS pushed at login and is parsed (66 buildings).
+	 * 1008 ROLEINFO only arrives if 1004 is sent, and 1004 is bisected as
+	 * a session killer, so role/zone data is normally absent. See the
+	 * corrected note above RequestAllBuildData in protocol.c for why
+	 * "2001 never arrives" looked true in the logs: handled opcodes
+	 * are not logged, only the default: branch is.
+	 * Original note, now known to be wrong:
 	 * This server never pushes 2001 BUILDINGINFO or 1008 ROLEINFO, and
 	 * sending those requests inside the login handshake made the server
 	 * close the session a couple of minutes in. Ask for them from here

@@ -2625,14 +2625,30 @@ void RequestRoleInfo(Connection *c)
 
 static bool g_builddata_logged = false;
 
-/* Fetch the building list (the client gets this as a login push, but on
- * this server 2001 _MSG_RESP_BUILDINGINFO never arrives — verified over
- * many runs: building_count stayed 0, so WaveUpgradeOne could never pick
- * a target and no upgrade was ever attempted).
+/* Fetch the building list.
  *
- * The request pairs with the 2001 response, i.e. opcode 2000, which was
- * missing from packet_map.h. Empty payload: the account is implied by
- * the connection, exactly like CLIENTINITOVER. */
+ * CORRECTION: an earlier version of this comment claimed 2001 never
+ * arrives on this server and that building_count stayed 0. That was
+ * wrong, and the reason it looked wrong is worth recording: the
+ * "[PKT] <name> (<opcode>)" line is only printed from the default:
+ * branch of the dispatch switch, so any opcode that HAS an explicit
+ * case - including 2001 - produces no packet log at all. Grepping the
+ * logs for 2001 therefore finds nothing even though the building list
+ * arrives reliably (66 buildings, trading post lv=20).
+ *
+ * The 2000 request is still not needed and stays disabled: 2001 is
+ * pushed at login anyway, and 2000 was bisected as a session killer.
+ * RecvAllBuildData below is fed by the 2001 push.
+ *
+ * Payload layout CONFIRMED against the decompiled client
+ * (RoleBuildingData, Pack=1):  u8 count, then per building
+ *   u16 ManorID (the position id the client uses for upgrades)
+ *   u16 BuildID
+ *   u8  Level
+ * i.e. exactly 5 bytes per record - which is what has always been read
+ * here, so the 66-building census and the upgrade target selection were
+ * parsing real state.
+ */
 void RequestAllBuildData(Connection *c)
 {
 	c->size = 2;
