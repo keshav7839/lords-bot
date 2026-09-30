@@ -91,7 +91,7 @@ mkdir -p "$STDLIB_DIR"
 java -cp "$D8_JAR" com.android.tools.r8.D8 \
     --min-api 26 --lib "$ANDROID_JAR" \
     --output "$OUT/dex" $CLASSES \
-    $(find "$STDLIB_DIR" -name '*.class' | head -400)
+    $(find "$STDLIB_DIR" -name '*.class')
 
 say "6/7 assemble APK"
 cp "$OUT/res-only.apk" "$OUT/$APK_NAME"
