@@ -242,9 +242,25 @@ static int bot_connect(Connection *c, const char *ip, unsigned short port)
 	return sock;
 }
 
+/* Cooperative shutdown hook, used by the Android JNI layer.
+ *
+ * ProcessConnection() owns an endless while(1) and its Connection lives on
+ * main()'s stack, so an embedded caller has no handle to close. This flag
+ * is checked only in the non-blocking "no data yet" branch, i.e. at most
+ * once per millisecond, which is enough to leave the loop promptly without
+ * changing anything when nobody sets it. Default 0 = current behaviour
+ * exactly. */
+volatile int g_bot_should_exit = 0;
+
+void bot_request_exit(void)
+{
+	g_bot_should_exit = 1;
+}
+
 void ProcessConnection(Connection *c)
 {
 	PacketStream *s = &c->stream;
+	g_bot_should_exit = 0;
 	
 	map_pos_t pos;
 	
@@ -282,6 +298,8 @@ void ProcessConnection(Connection *c)
 			}
 #else
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				if (g_bot_should_exit)
+					break; /* asked to stop */
 				usleep(1000);
 				continue; // no more data right now
 			}
