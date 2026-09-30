@@ -1236,6 +1236,126 @@ void WaveRecvLordEquipInv(Connection *c, const uint8_t *data, uint16_t size)
 	     line[0] ? line : "(empty)");
 }
 
+/* 3801 TALENTINFO - the account's talent levels.
+ *
+ * Layout (from the live 102-byte payload, corroborated by the decompile's
+ * TalentLevelTbl { ID, TalentID, Level, NeedPoint, Effect, EffectVal }):
+ *   byte 0-1 : header, zero on this account
+ *   byte 2   : group/kind marker (0x05 here)
+ *   byte 3-47: 45 per-talent level bytes, 0 meaning not yet spent
+ *   byte 48+ : further level banks, all zero here
+ *
+ * Only the level bank is interpreted. The header is reported but not
+ * acted on, because unlike the treasure extras below there is no second
+ * sample here to pin its meaning down - so it stays read-only.
+ *
+ * This is what makes talent automatable later: NeedPoint means talent
+ * spends points rather than resources, so there is no gem or food risk,
+ * and 3802 REQUEST_TALENT_LEVEL_ADD is already known to exist. What is
+ * still missing is that request's body, so nothing is sent. */
+void WaveRecvTalentInfo(Connection *c, const uint8_t *data, uint16_t size)
+{
+	static bool dumped = false;
+	if (!dumped) {
+		dumped = true;
+		WaveRecvDump(c, "TALENTINFO", data, size);
+	}
+	if (size < 3)
+		return;
+
+	/* The level bank runs to the last non-zero byte, not to the first
+	 * one: a talent at level 0 is an unspent talent and appears in the
+	 * middle of the bank, so "stop at the first zero" truncates after
+	 * three entries on a live account. */
+	uint16_t base = 3;
+	uint16_t last = base;
+	for (uint16_t i = base; i < size; i++)
+		if (data[i] != 0)
+			last = i;
+	uint16_t end = last + 1;
+	if (end <= base) {
+		LOGI("[TALENT] no talents unlocked yet\n");
+		return;
+	}
+
+	uint16_t max_lv = 0, spent = 0, owned = 0;
+	for (uint16_t i = base; i < end; i++) {
+		if (data[i] > max_lv) max_lv = data[i];
+		spent += data[i];
+		if (data[i]) owned++;
+	}
+	LOGI("[TALENT] %u of %u talents started, highest level %u, "
+	     "%u points invested (header=%u)\n",
+	     owned, end - base, max_lv, spent, data[2]);
+}
+
+/* 4026/4041/4053/4056/4068 TREASURE_LIST_EXTRA* - per-entry flag arrays.
+ *
+ * Layout CONFIRMED: u8 count, then exactly `count` flag bytes. Both
+ * samples are 48 bytes with a leading 0x2F (47), i.e. 1 + 47, and in
+ * 4056 the trailing bytes are a clean run of 0x01 - a flag array, not a
+ * coincidental byte pattern.
+ *
+ * 4056 is the double-ticket state. This is the read-only half of the
+ * treasure feature: it says which treasure entries can be run twice
+ * without spending a gem, so a future claim loop can prefer them. No
+ * treasure request is sent - the request bodies are still unknown, and
+ * an unconfirmed request on this server costs the session. */
+void WaveRecvTreasureExtra(Connection *c, const uint8_t *data, uint16_t size)
+{
+	static bool dumped = false;
+	if (!dumped) {
+		dumped = true;
+		WaveRecvDump(c, "TREASURE_EXTRA", data, size);
+	}
+	if (size < 1)
+		return;
+
+	uint8_t count = data[0];
+	if (count + 1u > size) {
+		LOGI("[TREASURE] extra flags truncated: says %u, payload %u\n",
+		     count, size);
+		return;
+	}
+
+	uint16_t set = 0;
+	for (uint8_t i = 0; i < count; i++)
+		if (data[1 + i]) set++;
+
+	LOGI("[TREASURE] %u of %u entries flagged (free double-run: %u)\n",
+	     set, count, set);
+}
+
+/* Pushes the server volunteers that the bot has no reader for yet.
+ *
+ * The bot receives these unprompted every run and drops them, which is
+ * the cheapest possible source of new capability: parsing a push costs
+ * no request, so it cannot be the thing that closes the session.
+ *
+ * One-shot hex dumps are enough to write a reader from real bytes, the
+ * same way the equipment reader was built (3804). Nothing here sends a
+ * packet. */
+bool WaveIsInterestingPush(uint16_t opcode)
+{
+	switch (opcode) {
+	case 3801:   /* TALENTINFO - talent point state              */
+	case 4001:   /* TREASURE_LIST - claimable treasures         */
+	case 4026: case 4041: case 4053: case 4056: case 4068:
+	             /* TREASURE_LIST_EXTRA*                        */
+	case 2601:   /* WALLINFO - wall state beside the traps      */
+	case 9402:   /* VALHALLA_INFO                               */
+	case 3140:   /* VALHALLA_MISSION                            */
+	case 9771:   /* RELICS_INFO                                 */
+	case 9795:   /* RELICS_RANKGACHA_LIST                       */
+	case 5401:   /* WONDER_INIT_NOTICE                          */
+	case 1821:   /* SPCHALLENGE2_INFO                           */
+	case 2063:   /* DECORATION_INFO                             */
+		return true;
+	default:
+		return false;
+	}
+}
+
 /* Mystic Spire item craft (8216 ITEMCRAFT_INFO).
  *
  * CONFIRMED request shape (PetManager.SendItemCraft_Start):

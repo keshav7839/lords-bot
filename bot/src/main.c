@@ -897,7 +897,26 @@ void ProcessConnection(Connection *c)
 					WaveRecvMarchNotAtk(c, s->buffer + s->parse_pos + 4,
 					                    s->packet_size - 4);
 					break;
+				case _MSG_RESP_TALENTINFO:
+					WaveRecvTalentInfo(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
+				case _MSG_RESP_TREASURE_LIST_EXTRA:
+				case _MSG_RESP_TREASURE_LIST_EXTRA_CRYSTAL:
+				case _MSG_RESP_TREASURE_LIST_EXTRA_POINT:
+				case _MSG_RESP_TREASURE_LIST_EXTRA_DOUBLETICKET:
+				case _MSG_RESP_TREASURE_LIST_EXTRA_EXTEND:
+					WaveRecvTreasureExtra(c,
+						s->buffer + s->parse_pos + 4,
+						s->packet_size - 4);
+					break;
 				default:
+					if (WaveIsInterestingPush(s->packet_type))
+						WaveRecvDump(c,
+							get_packet_name(s->packet_type),
+							s->buffer + s->parse_pos + 4,
+							s->packet_size - 4);
 					if (c->wave.log_packets) {
 						LOGI("[PKT] %s (%u) size=%u\n",
 							get_packet_name(s->packet_type),
