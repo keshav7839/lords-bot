@@ -3,17 +3,36 @@
 An Android control panel for the C bot in `native/bot`. The panel hosts the
 existing engine as `libbot.so`; it does not reimplement it.
 
-## Why the APK is built in CI
+## The build
 
-`aapt2`, `d8` and `apksigner` ship as **x86-64 host binaries**. An APK cannot
-be produced on an ARM64 device, so `.github/workflows/apk.yml` builds it on an
-x86-64 runner and publishes it as a release artifact. If you open the project
-in Android Studio it builds the same way locally.
+`./build.sh` produces `build/lordsm.apk`. **No Gradle, no Android Studio, no
+dependency resolution** — just `javac` + `kotlinc` + `d8` + `aapt` +
+`apksigner`:
 
-Release signing uses `BOT_KEYSTORE_B64` / `BOT_KEYSTORE_PASS` /
-`BOT_KEY_ALIAS` / `BOT_KEY_PASS` secrets. **Without them the release build
-falls back to the debug key**, so a fork still produces an installable APK —
-just not one from Play.
+```
+export JAVA_HOME=... ANDROID_JAR=.../android.jar D8_JAR=.../d8.jar \
+       APKSIGNER_JAR=.../apksigner.jar AAPT=.../aapt \
+       KOTLINC=.../kotlinc KOTLIN_STDLIB=.../kotlin-stdlib.jar
+./build.sh
+```
+
+This runs identically on ARM64 and x86-64. It matters because the usual
+toolchain does not: `aapt2`, `d8`, `zipalign` and `apksigner`'s helper ship
+as **x86-64 host binaries**, so an APK normally cannot be produced on an
+ARM64 phone at all. `build.sh` sidesteps `aapt2` by using **aapt v1**, which
+compiles and links resources in one pass and still emits `R.java`, and skips
+`zipalign` entirely (the APK is simply not page-aligned, which costs a little
+size and does not affect installation).
+
+Signing uses a generated debug key. Swap in a real key before distributing.
+
+### Why the UI is framework-only
+
+There is no AndroidX and no Compose in this app. The UI is plain `Activity`,
+`ListView`, `Switch`, `EditText` and `Spinner` built in Kotlin. Every
+third-party dependency removed is one fewer thing that can fail to resolve on
+a machine with no Gradle cache, and the trade was worth it: the first end-to-end
+build succeeded. The cost is a less decorative UI than Compose would give.
 
 ## Layout
 

@@ -7,8 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
-import androidx.core.app.NotificationCompat
 import java.io.File
 
 /**
@@ -110,14 +110,19 @@ class BotService : Service(), NativeBridge.LogSink {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        // Framework Notification.Builder, not androidx NotificationCompat:
+        // this app deliberately carries no AndroidX dependency so the APK
+        // can be produced by the standalone build.sh with nothing to resolve.
+        val b = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Lords bot engine")
             .setContentText(text.take(120))
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setOngoing(true)
             .setContentIntent(open)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            b.setPriority(Notification.PRIORITY_LOW)
+        }
+        return b.build()
     }
 
     private fun updateNotification(line: String) {

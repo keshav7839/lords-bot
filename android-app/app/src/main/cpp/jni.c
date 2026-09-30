@@ -60,7 +60,7 @@ static void emit_line(const char *s) {
     if (js) {
         (*env)->CallVoidMethod(env, g_listener, g_on_line, js);
         if ((*env)->ExceptionCheck(env))
-            (*env)->ExceptionClear(env, NULL);
+            (*env)->ExceptionClear(env);
         (*env)->DeleteLocalRef(env, js);
     }
     if (attached)
@@ -119,7 +119,7 @@ static int start_log_capture(JNIEnv *env, jobject listener) {
         jclass cls = (*env)->GetObjectClass(env, listener);
         g_on_line = (*env)->GetMethodID(env, cls, "onLine", "(Ljava/lang/String;)V");
         if ((*env)->ExceptionCheck(env))
-            (*env)->ExceptionClear(env, NULL);
+            (*env)->ExceptionClear(env);
         (*env)->DeleteLocalRef(env, cls);
     }
 
