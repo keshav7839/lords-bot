@@ -1349,6 +1349,9 @@ bool WaveIsInterestingPush(uint16_t opcode)
 	case 5401:   /* WONDER_INIT_NOTICE                          */
 	case 1821:   /* SPCHALLENGE2_INFO                           */
 	case 2063:   /* DECORATION_INFO                             */
+	case 1101:   /* ROLE_UPDATEINFO - resource deltas      */
+	case 2013:   /* BUILDINGERROR - upgrade refusal reason  */
+	case 2408:   /* TRAINING_ response                      */
 		return true;
 	default:
 		return false;
