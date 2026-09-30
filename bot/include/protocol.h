@@ -122,7 +122,6 @@ void RecvAllianceInfo(Connection*, const uint8_t*);
 
 void RecvBuildingQueue(Connection*, const uint8_t*, uint16_t);
 void RequestAllBuildData(Connection *c);
-void RequestRoleInfo(Connection *c);
 
 void RecvUpdateWatchTowerAddLineInfo(Connection*, const uint8_t*);
 void RecvWatchTowerLineDetail(Connection *c, const uint8_t *data);

@@ -2601,35 +2601,6 @@ uint32_t GetTradingPostSupplyCapacity(uint8_t level) {
 	return trading_post_supply_capacity[level];
 }
 
-/* Ask the server for the role/character info (1008 ROLEINFO).
- *
- * 1008 is the ONLY packet that carries zone_id, point_id, the player
- * name and the troop roster. On this server it is not pushed during
- * login, so c->player stayed {zone_id=0, name="", troop.total=0}, which
- * silently disabled: map scanning, gathering, hunting (all of them gate
- * on zone_id), and training (gates on name). The 1101 ROLE_UPDATEINFO
- * pushes that do arrive carry only resource deltas.
- *
- * 1004 _MSG_LOGIN_REQUESTLOGIN is the request half of that pair. Empty
- * payload — the account comes from the authenticated connection. */
-void RequestRoleInfo(Connection *c)
-{
-	c->size = 2;
-
-	write_u16(c->data + c->size, _MSG_LOGIN_REQUESTLOGIN);
-	c->size += 2;
-	write_u32(c->data + c->size, ++c->protocol.seq_id);
-	c->size += 4;
-
-	write_u16(c->data, c->size);
-	/* Login-stage packet: must be encrypted like the other handshake
-	 * sends. Sending it in the clear (send_packet(c, false)) made the
-	 * server drop the session about two minutes later — verified by
-	 * bisection: with 1004 encrypted the run stays up, with it in the
-	 * clear the connection closes. */
-	send_packet(c, true);
-	LOGI("[LOGIN] requested role info (1004 -> 1008)\n");
-}
 
 static bool g_builddata_logged = false;
 

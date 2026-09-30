@@ -632,10 +632,12 @@ static bool ParserConfig(Connection *c, const char *key, const char *value) {
 		return true;
 	}
 	
-	if (strcmp(key, "wave.request_role_info") == 0) {
-		c->wave.request_role_info = (strcmp(value, "true") == 0);
+	/* wave.request_role_info has been removed: 1004 is the LOGIN
+	 * request (_MSG_LOGIN_REQUESTLOGIN), not a role-data request, and
+	 * sending it post-login is a re-auth attempt that closes the
+	 * session. ROLEINFO is pushed at login; see main.c. */
+	if (strcmp(key, "wave.request_role_info") == 0)
 		return true;
-	}
 	
 	if (strcmp(key, "wave.trap_repair") == 0) {
 		c->wave.trap_repair = (strcmp(value, "true") == 0);

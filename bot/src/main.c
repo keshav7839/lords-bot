@@ -80,25 +80,31 @@ void BotTick(Connection *c)
 		else if ((time(NULL) - s_init_at) >= 5) {
 			s_init_at = time(NULL);
 			c->init_deferred = false;
-			if (!c->roleinfo_requested) {
-				c->roleinfo_requested = true;
-				/* 1004 is a pre-authentication opcode. It does
-				 * return ROLEINFO (zone/name/troops) and nothing
-				 * else does on this server, but the server
-				 * drops the session ~2 min later when it is
-				 * sent post-login, encrypted or not. Verified by
-				 * bisection: build without this request runs
-				 * 60+ min clean.
-				 * Kept behind a config flag so the trade-off is
-				 * explicit rather than silently fatal. */
-				if (c->wave.request_role_info)
-					RequestRoleInfo(c);
-				else
-					LOGW("[LOGIN] ROLEINFO not requested "
-					     "(wave.request_role_info=false) — map "
-					     "scan/gather stay blocked until the "
-					     "server accepts 1004 post-login\n");
-			}
+			/* No role-info request exists.
+			 *
+			 * 1004 was being used here as "REQUESTLOGIN" on the
+			 * theory that it would return ROLEINFO. Reading
+			 * Protocol.cs settles it: 1004 is _MSG_LOGIN_REQUESTLOGIN,
+			 * the credential half of the login handshake
+			 * (1001 LOGINTOL -> 1003 LOGINVALIDATE -> 1004 REQUESTLOGIN
+			 * -> 1007 FORWARDLOGINMSG -> 1008 ROLEINFO -> 1009 SUCCESS),
+			 * and there is no separate role-info request opcode in the
+			 * client at all.
+			 *
+			 * So re-sending it after login is a second authentication
+			 * attempt, not a data request - which is why it closed the
+			 * session about two minutes later, encrypted or not, every
+			 * single time. The old comment here claimed a bisection
+			 * showed "encrypted is fine"; the bisection only ever proved
+			 * that the delay varied. Any 1004 post-login is fatal.
+			 *
+			 * ROLEINFO (1008) is pushed by the server as part of real
+			 * login. It is therefore only obtainable by completing the
+			 * login handshake far enough for the server to push it,
+			 * which is a separate investigation from this code path.
+			 * Until then the bot has no role/zone data, which is the
+			 * real reason map scan, gather and resource accounting are
+			 * blocked - not a missing request. */
 			if (c->wave.load_equip_inventory && !c->equipinv_requested) {
 				c->equipinv_requested = true;
 				RequestLoadEquip(c, 0);
