@@ -1,6 +1,7 @@
 build/
 .gradle/
 app/build/
-*.jks
-keystore.jks
 local.properties
+# the signing key is deliberately kept so upgrades stay valid;
+# never commit it, but do not delete it either
+keys/*.ks

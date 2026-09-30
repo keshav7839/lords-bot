@@ -109,13 +109,24 @@ with zipfile.ZipFile(apk, 'a', zipfile.ZIP_DEFLATED) as z:
 PYEOF
 
 say "7/7 sign"
-KS="$OUT/debug.ks"
-keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
-    -alias lordsm -keyalg RSA -keysize 2048 -validity 10000 \
-    -dname "CN=lordsM, OU=dev, O=lordsM, L=-, S=-, C=ZZ" >/dev/null 2>&1
+KS="$HERE/keys/debug.ks"
+# Generated once and kept. If this were inside $OUT it would be deleted and
+# regenerated on every run, so each APK would carry a different signing key
+# and installing a newer build over an older one would fail as a signature
+# mismatch.
+mkdir -p "$HERE/keys"
+if [ ! -f "$KS" ]; then
+    keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
+        -alias lordsm -keyalg RSA -keysize 2048 -validity 10000 \
+        -dname "CN=lordsM, OU=dev, O=lordsM, L=-, S=-, C=ZZ" >/dev/null 2>&1
+    echo "   generated signing key $KS"
+else
+    echo "   reusing signing key $KS"
+fi
 java -cp "$APKSIGNER_JAR" com.android.apksigner.ApkSignerTool sign \
     --ks "$KS" --ks-pass pass:android --key-pass pass:android \
     --ks-key-alias lordsm --min-sdk-version 26 \
+    --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
     --out "$OUT/$APK_NAME.signed" "$OUT/$APK_NAME"
 mv "$OUT/$APK_NAME.signed" "$OUT/$APK_NAME"
 
