@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.igg.lordsm.panel">
+    package="com.igg.lordsm.panel"
+    android:versionCode="1"
+    android:versionName="lordsM">
+
+    <!-- Mandatory. Without this element targetSdkVersion defaults to 1 and
+         Android 14+ (so 15 and 16 too) refuses to install the APK outright.
+         aapt v1 takes these from the manifest because there is no Gradle
+         manifest merger to inject them. -->
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
 
     <!-- The bot is a network client that talks to the IGG game servers. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -11,7 +20,7 @@
          purpose: the bot reads game state over its own socket, it does not
          drive another app's UI. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -39,7 +48,11 @@
         <service
             android:name="com.igg.lordsm.panel.BotService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local game-protocol automation engine the user started explicitly" />
+        </service>
 
     </application>
 </manifest>

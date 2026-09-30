@@ -65,9 +65,23 @@ javac -nowarn -proc:none -implicit:none \
 
 say "4/7 kotlinc"
 mapfile -t KTS < <(find "$APP/java" -name '*.kt')
-"$KOTLINC" "${KTS[@]}" \
-    -classpath "$ANDROID_JAR:$KOTLIN_STDLIB:$OUT/classes" \
-    -d "$OUT/kt" -nowarn 2>&1 | grep -vE "^(warning:|info:)" || true
+# The compiler's stderr must decide the build, not the grep. Piping into
+# grep with "|| true" previously swallowed a hard compile error and produced
+# an APK containing the previous run's classes.
+if ! "$KOTLINC" "${KTS[@]}" \
+        -classpath "$ANDROID_JAR:$KOTLIN_STDLIB:$OUT/classes" \
+        -d "$OUT/kt" -nowarn > "$OUT/kotlinc.log" 2>&1; then
+    grep -E "^(error:|[0-9]+ error)" "$OUT/kotlinc.log" | head -20 || true
+    echo "KOTLINC FAILED - see $OUT/kotlinc.log" >&2
+    exit 1
+fi
+# jansi cannot load its own native lib on Android; that message is cosmetic.
+grep -E "^(error:|e: )" "$OUT/kotlinc.log" | head -20 || true
+
+if [ -z "$(find "$OUT/kt" -name '*.class' -print -quit)" ]; then
+    echo "kotlinc produced no classes - refusing to package a stale APK" >&2
+    exit 1
+fi
 
 say "5/7 d8 -> classes.dex"
 CLASSES=$(find "$OUT/classes" "$OUT/kt" -name '*.class')

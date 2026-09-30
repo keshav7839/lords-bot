@@ -4,6 +4,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -14,6 +16,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.BaseAdapter
@@ -81,7 +84,9 @@ class MainActivity : Activity(), NativeBridge.LogSink {
             store.save(accounts)
         }
         activeId = accounts.first().id
-        setContentView(buildRoot())
+        val root = buildRoot()
+        setContentView(root)
+        applyInsets(root)
         showDashboard()
         pollEngine()
     }
@@ -89,6 +94,36 @@ class MainActivity : Activity(), NativeBridge.LogSink {
     // ---------------------------------------------------------------- ui
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    /**
+     * Android 15+ enforces edge-to-edge for apps targeting SDK 35, so the
+     * window extends under the status and navigation bars. The UI is built
+     * programmatically and knows nothing about that, so without this the
+     * title bar hides behind the clock and the nav row sits under the
+     * gesture bar.
+     */
+    private fun applyInsets(root: View) {
+        root.setOnApplyWindowInsetsListener { v, insets ->
+            val l: Int; val t: Int; val r: Int; val b: Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val bars = insets.getInsets(
+                    WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                l = bars.left; t = bars.top; r = bars.right; b = bars.bottom
+            } else {
+                @Suppress("DEPRECATION")
+                l = insets.systemWindowInsetLeft
+                @Suppress("DEPRECATION")
+                t = insets.systemWindowInsetTop
+                @Suppress("DEPRECATION")
+                r = insets.systemWindowInsetRight
+                @Suppress("DEPRECATION")
+                b = insets.systemWindowInsetBottom
+            }
+            v.setPadding(l, t, r, b)
+            insets
+        }
+        root.requestApplyInsets()
+    }
 
     private fun buildRoot(): View {
         val root = LinearLayout(this).apply {
@@ -657,6 +692,9 @@ class MainActivity : Activity(), NativeBridge.LogSink {
             toast("No credential - import a PCAPdroid export")
             showAccounts(); return
         }
+        // Android 13+ will not show a foreground-service notification without
+        // this, and the service is started from here, so ask before starting.
+        ensureNotificationPermission()
         val cfg = File(filesDir, "cfg/${acct.id}.cfg")
         ConfigWriter.write(cfg, acct)
         BotService.start(this, acct.id, cfg.absolutePath)
@@ -730,6 +768,25 @@ class MainActivity : Activity(), NativeBridge.LogSink {
     private fun update(acct: Account) {
         accounts = accounts.map { if (it.id == acct.id) acct else it }.toMutableList()
         store.save(accounts)
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            == PackageManager.PERMISSION_GRANTED) return
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 9001)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 9001) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            if (!granted)
+                toast("Engine runs, but Android will hide its notification")
+        }
     }
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
