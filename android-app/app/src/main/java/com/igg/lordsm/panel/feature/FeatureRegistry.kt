@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel.feature
+package com.igg.lordsm.panel.feature
 
 /**
  * One editable bot setting, as shown in the app.

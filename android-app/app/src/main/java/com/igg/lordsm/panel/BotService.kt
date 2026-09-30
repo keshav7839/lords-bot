@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel
+package com.igg.lordsm.panel
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -21,8 +21,8 @@ import java.io.File
 class BotService : Service(), NativeBridge.LogSink {
 
     companion object {
-        const val ACTION_START = "com.igg.lordsbot.panel.START"
-        const val ACTION_STOP = "com.igg.lordsbot.panel.STOP"
+        const val ACTION_START = "com.igg.lordsm.panel.START"
+        const val ACTION_STOP = "com.igg.lordsm.panel.STOP"
         const val CHANNEL_ID = "bot_engine"
         const val NOTIF_ID = 1001
         const val EXTRA_ACCOUNT_ID = "accountId"

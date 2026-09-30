@@ -167,7 +167,7 @@ static void *bot_thread_main(void *arg) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_igg_lordsbot_panel_NativeBridge_nativeStart(JNIEnv *env, jclass cls,
+Java_com_igg_lordsm_panel_NativeBridge_nativeStart(JNIEnv *env, jclass cls,
                                                      jstring cfg_path,
                                                      jobject listener) {
     (void)cls;
@@ -190,7 +190,7 @@ Java_com_igg_lordsbot_panel_NativeBridge_nativeStart(JNIEnv *env, jclass cls,
 }
 
 JNIEXPORT void JNICALL
-Java_com_igg_lordsbot_panel_NativeBridge_nativeStop(JNIEnv *env, jclass cls) {
+Java_com_igg_lordsm_panel_NativeBridge_nativeStop(JNIEnv *env, jclass cls) {
     (void)cls;
     if (!g_bot_running)
         return;
@@ -201,7 +201,7 @@ Java_com_igg_lordsbot_panel_NativeBridge_nativeStop(JNIEnv *env, jclass cls) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_igg_lordsbot_panel_NativeBridge_nativeIsRunning(JNIEnv *env, jclass cls) {
+Java_com_igg_lordsm_panel_NativeBridge_nativeIsRunning(JNIEnv *env, jclass cls) {
     (void)env; (void)cls;
     return g_bot_running ? JNI_TRUE : JNI_FALSE;
 }

@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel.data
+package com.igg.lordsm.panel.data
 
 import android.content.Context
 import org.json.JSONArray

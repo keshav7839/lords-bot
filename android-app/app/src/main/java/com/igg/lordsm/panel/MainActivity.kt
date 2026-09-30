@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel
+package com.igg.lordsm.panel
 
 import android.net.Uri
 import android.os.Bundle
@@ -30,11 +30,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.igg.lordsbot.panel.data.Account
-import com.igg.lordsbot.panel.data.AccountStore
-import com.igg.lordsbot.panel.feature.*
-import com.igg.lordsbot.panel.pcap.PcapdroidImporter
-import com.igg.lordsbot.panel.ui.LordsBotTheme
+import com.igg.lordsm.panel.data.Account
+import com.igg.lordsm.panel.data.AccountStore
+import com.igg.lordsm.panel.feature.*
+import com.igg.lordsm.panel.pcap.PcapdroidImporter
+import com.igg.lordsm.panel.ui.LordsBotTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 

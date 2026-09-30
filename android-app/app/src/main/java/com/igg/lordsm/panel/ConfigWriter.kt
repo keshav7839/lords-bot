@@ -1,9 +1,9 @@
-package com.igg.lordsbot.panel
+package com.igg.lordsm.panel
 
-import com.igg.lordsbot.panel.data.Account
-import com.igg.lordsbot.panel.feature.FeatureRegistry
-import com.igg.lordsbot.panel.feature.FieldType
-import com.igg.lordsbot.panel.feature.Risk
+import com.igg.lordsm.panel.data.Account
+import com.igg.lordsm.panel.feature.FeatureRegistry
+import com.igg.lordsm.panel.feature.FieldType
+import com.igg.lordsm.panel.feature.Risk
 import java.io.File
 
 /**

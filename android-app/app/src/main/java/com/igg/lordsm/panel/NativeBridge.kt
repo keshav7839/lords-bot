@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel
+package com.igg.lordsm.panel
 
 /**
  * Thin JNI surface onto libbot.so. The engine is the existing C bot; the

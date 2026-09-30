@@ -24,7 +24,7 @@
         android:theme="@style/Theme.LordsBotPanel">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.igg.lordsm.panel.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
@@ -36,7 +36,7 @@
         </activity>
 
         <service
-            android:name=".BotService"
+            android:name="com.igg.lordsm.panel.BotService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 

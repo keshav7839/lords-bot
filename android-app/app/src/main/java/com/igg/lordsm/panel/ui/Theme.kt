@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel.ui
+package com.igg.lordsm.panel.ui
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme

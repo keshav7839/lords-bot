@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel.pcap
+package com.igg.lordsm.panel.pcap
 
 /**
  * Imports a PCAPdroid text export and pulls the game credential out of it.

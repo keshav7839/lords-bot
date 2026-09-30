@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.igg.lordsbot.panel"
+    namespace = "com.igg.lordsm.panel"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.igg.lordsbot.panel"
+        applicationId = "com.igg.lordsm.panel"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "lordsM"
 
         externalNativeBuild {
             cmake {

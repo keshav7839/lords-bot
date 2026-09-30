@@ -1,4 +1,4 @@
-package com.igg.lordsbot.panel.data
+package com.igg.lordsm.panel.data
 
 /**
  * One bot profile. Credentials live here and nowhere else; the config file

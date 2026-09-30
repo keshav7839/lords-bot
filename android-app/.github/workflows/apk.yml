@@ -90,18 +90,26 @@ jobs:
           cd android-app
           gradle --no-daemon --stacktrace assembleRelease
 
+      - name: Name the APK
+        # Gradle always emits app-release.apk; the deliverable is called
+        # lordsm.apk so it is unambiguous in the artifacts list.
+        run: |
+          cd android-app/app/build/outputs/apk/release
+          for f in *.apk; do mv "$f" "lordsm.apk"; done
+          ls -l
+
       - name: Collect artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lords-bot-panel-apk
-          path: android-app/app/build/outputs/apk/release/*.apk
+          name: lordsm
+          path: android-app/app/build/outputs/apk/release/lordsm.apk
           if-no-files-found: error
 
       - name: Publish to Releases
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
-          files: android-app/app/build/outputs/apk/release/*.apk
+          files: android-app/app/build/outputs/apk/release/lordsm.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
