@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A crowned shield: reads as "kingdom defence" at launcher size. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- shield body -->
+    <path
+        android:fillColor="#D9A441"
+        android:pathData="M54,26 L76,34 L76,54 C76,68 66,78 54,83 C42,78 32,68 32,54 L32,34 Z" />
+    <path
+        android:fillColor="#14171C"
+        android:pathData="M54,32 L70,38 L70,54 C70,64 63,72 54,76 C45,72 38,64 38,54 L38,38 Z" />
+
+    <!-- crown, three points -->
+    <path
+        android:fillColor="#4FB3C4"
+        android:pathData="M44,46 L49,53 L54,44 L59,53 L64,46 L62,57 L46,57 Z" />
+    <!-- base bar -->
+    <path
+        android:fillColor="#4FB3C4"
+        android:pathData="M46,60 L62,60 L62,63 L46,63 Z" />
+</vector>

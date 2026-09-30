@@ -1,0 +1,107 @@
+name: Build APK
+
+# The Android toolchain (aapt2, d8, apksigner) ships as x86-64 host
+# binaries, so an APK cannot be produced on an ARM64 device. These runners
+# are x86-64, which is exactly why the build lives here rather than in a
+# local script.
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'android-app/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify the bundled C bot still compiles standalone
+        # Cheap gate: if the engine breaks, fail here in 20s instead of
+        # after a full NDK build.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential
+          cd android-app/native/bot
+          gcc -O2 -std=gnu11 -DVERSION='"1.0.2"' -I. \
+            main.c connection.c log.c protocol.c des.c map_point.c \
+            command.c config.c auto.c waves.c bank.c \
+            -o /tmp/bot_smoke_test
+          echo "bot engine compiles clean"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Gradle
+        # No wrapper jar is committed: it is a binary blob that cannot be
+        # regenerated without Gradle, and shipping an unverifiable one is
+        # worse than pinning the distribution here.
+        run: |
+          curl -sSL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/g.zip
+          unzip -q /tmp/g.zip -d /opt
+          echo /opt/gradle-8.9/bin >> $GITHUB_PATH
+
+      - name: Verify app controls match the bot's config parser
+        # FeatureRegistry is a hand-written table. This fails the build if it
+        # drifts from src/config.c, so a renamed key can never reach a
+        # release APK as a silently-ignored toggle.
+        run: |
+          cd app/src/main/java/com/igg/lordsbot/panel/feature
+          python3 - <<'PYEOF'
+          import re, sys, os
+          here = os.getcwd()
+          reg = open('FeatureRegistry.kt').read()
+          flat = set(re.findall(r'(?:ro|t|i|c|FeatureSpec)\\("([a-z][a-z0-9_.]*)"', reg))
+          cfg  = open(os.path.join(here, '../../../../../../../../../native/bot/config.c')).read()
+          exact  = set(re.findall(r'strcmp\\(key,\\s*"([^"]+)"\\)', cfg))
+          # strncmp(key, "prefix", n) means every key with that prefix is legal,
+          # which is how train.target_* and wave.arena_offense_hero* are parsed.
+          prefix = set(re.findall(r'strncmp\\(key,\\s*"([^"]+)"', cfg))
+          def known(k):
+              return k in exact or any(k.startswith(p) for p in prefix)
+          bad = sorted(k for k in flat if not known(k))
+          if bad:
+              print('Registry keys the bot does not accept:')
+              for k in bad: print('  ', k)
+              sys.exit(1)
+          print(f'{len(flat)} controls, all accepted by the bot parser')
+          PYEOF
+
+      - name: Decode the keystore
+        # Secrets are optional: without them the release build falls back to
+        # the debug key so a fork still yields an installable artifact.
+        if: ${{ env.BOT_KEYSTORE_B64 != '' }}
+        env:
+          BOT_KEYSTORE_B64: ${{ secrets.BOT_KEYSTORE_B64 }}
+        run: |
+          echo "$BOT_KEYSTORE_B64" | base64 -d > keystore.jks
+
+      - name: Build release APK
+        run: |
+          cd android-app
+          gradle --no-daemon --stacktrace assembleRelease
+
+      - name: Collect artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lords-bot-panel-apk
+          path: android-app/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+      - name: Publish to Releases
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android-app/app/build/outputs/apk/release/*.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

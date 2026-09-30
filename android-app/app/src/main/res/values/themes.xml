@@ -1,0 +1,10 @@
+<resources>
+    <!-- Compose draws everything, so the platform theme only needs to be a
+         no-action-bar shell with a matching window background to avoid a
+         white flash on cold start. -->
+    <style name="Theme.LordsBotPanel" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
