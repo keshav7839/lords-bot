@@ -766,9 +766,20 @@ void RequestHelpAllianceMember(Connection *c, uint16_t record_sn_count, const ui
 
 void SendStartBuilding(Connection *c,
                        uint16_t position_id,
-                       uint16_t build_id,
-                       uint8_t operation_type)
+                       uint16_t build_id)
 {
+    /* Payload CONFIRMED against the decompiled client
+     * (BuildsData.sendStartBuilding):
+     *
+     *   seq | u16 ManorID | u16 BuildID
+     *
+     * There is deliberately no level and no trailing byte. The server
+     * derives the target level itself, so an old version of this
+     * function appended a u8 "operation_type" that the client never
+     * sends - which shifted the last byte of every upgrade request and
+     * had the server answer every single attempt with error=3. Six
+     * attempts, six rejections, on an otherwise correct manor/build id
+     * pair. Removing the byte is the whole fix. */
     c->size = 2;
 
     write_u16(c->data + c->size, _MSG_REQUEST_BUILDBEGIN);
@@ -782,9 +793,6 @@ void SendStartBuilding(Connection *c,
 
     write_u16(c->data + c->size, build_id);
     c->size += 2;
-
-    write_u8(c->data + c->size, operation_type);
-    c->size += 1;
 
     write_u16(c->data, c->size);
 

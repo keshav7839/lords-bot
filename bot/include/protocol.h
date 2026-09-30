@@ -56,7 +56,7 @@ void RequestWatchTowerLineDetail(Connection *c, uint32_t);
 void RequestTroopTakeBack(Connection*, uint8_t);
 
 void RequestSendHelp(Connection *c, uint16_t record_sn_count, const uint32_t *record_sn);
-void SendStartBuilding(Connection *c, uint16_t position_id, uint16_t build_id, uint8_t operation_type);
+void SendStartBuilding(Connection *c, uint16_t position_id, uint16_t build_id);
 void ServerNewbieTeleport(Connection *c, uint16_t kingdom_id, uint16_t zone_id, uint8_t point_id);
 void ServerRelocate(Connection *c, uint16_t kingdom_id, uint16_t zone_id, uint8_t point_id);
 void RequestAllianceGiftInfo(Connection*);

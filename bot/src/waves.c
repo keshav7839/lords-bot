@@ -252,8 +252,7 @@ void WaveUpgradeOne(Connection *c)
 			if (!IsBuilding(b->build_id))
 				continue;
 
-			SendStartBuilding(c, b->position_id, b->build_id,
-			                  BUILD_OP_UPGRADE);
+			SendStartBuilding(c, b->position_id, b->build_id);
 			g_build_cursor = (uint8_t)((idx + 1) % prio_count);
 			g_build_last = now;
 			g_build_pending = true;
